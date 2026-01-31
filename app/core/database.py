@@ -80,5 +80,17 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 async def init_db() -> None:
     """Initialize database tables."""
+    from sqlalchemy import text
+
     async with engine.begin() as conn:
+        # Create tables if they don't exist
         await conn.run_sync(Base.metadata.create_all)
+
+        # Add is_admin column to users table if it doesn't exist
+        try:
+            await conn.execute(text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE"
+            ))
+        except Exception:
+            # Column might already exist or DB doesn't support IF NOT EXISTS
+            pass
