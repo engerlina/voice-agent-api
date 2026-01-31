@@ -19,7 +19,7 @@ from app.models.user import User
 router = APIRouter()
 
 # Admin email(s) - could also be stored in env
-ADMIN_EMAILS = ["jonochan@gmail.com"]
+ADMIN_EMAILS = ["jonochan@gmail.com", "jonathan@aineversleeps.net"]
 
 
 async def get_admin_user(
