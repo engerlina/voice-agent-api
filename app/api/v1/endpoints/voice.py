@@ -93,12 +93,19 @@ class LiveKitTokenResponse(BaseModel):
 @router.get("/status")
 async def voice_agent_status():
     """Check if voice agent is configured and ready."""
+    # Mask phone number for display (show last 4 digits)
+    phone = settings.twilio_phone_number
+    masked_phone = f"***{phone[-4:]}" if phone and len(phone) >= 4 else None
+
     return {
         "enabled": settings.voice_agent_enabled,
         "livekit_configured": bool(settings.livekit_url),
         "stt_configured": bool(settings.deepgram_api_key),
         "tts_configured": bool(settings.elevenlabs_api_key),
         "llm_configured": bool(settings.openai_api_key or settings.anthropic_api_key),
+        "telephony_configured": bool(settings.twilio_account_sid and settings.twilio_phone_number),
+        "phone_number": phone if phone else None,
+        "phone_number_masked": masked_phone,
     }
 
 
