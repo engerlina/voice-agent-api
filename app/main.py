@@ -114,9 +114,10 @@ async def root():
     """Root endpoint - basic API info."""
     return {
         "name": settings.app_name,
-        "version": "1.0.0",
+        "version": "1.0.1",
         "status": "operational",
         "docs": f"{settings.api_v1_prefix}/docs" if settings.debug else None,
+        "admin_enabled": True,
     }
 
 
