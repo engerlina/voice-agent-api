@@ -3,10 +3,12 @@
 from datetime import datetime, timedelta
 from typing import Optional
 
+import hashlib
+import secrets
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +19,6 @@ from app.models.user import User
 
 router = APIRouter()
 security = HTTPBearer()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 # Pydantic models
@@ -51,11 +52,24 @@ class UserResponse(BaseModel):
 
 # Helper functions
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    """Verify password against stored hash."""
+    # Hash format: salt$hash
+    if "$" not in hashed_password:
+        return False
+    salt, stored_hash = hashed_password.split("$", 1)
+    computed_hash = hashlib.pbkdf2_hmac(
+        "sha256", plain_password.encode(), salt.encode(), 100000
+    ).hex()
+    return secrets.compare_digest(computed_hash, stored_hash)
 
 
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    """Hash password with random salt."""
+    salt = secrets.token_hex(16)
+    hash_value = hashlib.pbkdf2_hmac(
+        "sha256", password.encode(), salt.encode(), 100000
+    ).hex()
+    return f"{salt}${hash_value}"
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
