@@ -23,9 +23,8 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Trvel API", version="1.0.0", env=settings.app_env)
 
     # Initialize database (create tables if needed)
-    if settings.debug:
-        await init_db()
-        logger.info("Database initialized")
+    await init_db()
+    logger.info("Database initialized")
 
     yield
 
@@ -70,6 +69,8 @@ app.add_middleware(
         "https://trvel.co",
         "https://www.trvel.co",
         "https://app.trvel.co",
+        "https://voice-agent-dashboard-jade.vercel.app",
+        "https://voice-agent-dashboard.vercel.app",
         "http://localhost:3000",  # Development
     ],
     allow_credentials=True,
