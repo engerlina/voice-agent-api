@@ -391,6 +391,7 @@ async def search_available_numbers(
     country: str = Query(default="US", description="Country code (US, CA, GB, AU, etc.)"),
     area_code: Optional[str] = Query(default=None, description="Area code to search"),
     contains: Optional[str] = Query(default=None, description="Pattern the number should contain"),
+    number_type: str = Query(default="local", description="Number type: local, mobile, toll_free"),
     admin: User = Depends(get_admin_user),
 ):
     """Search for available phone numbers to purchase from Twilio."""
@@ -404,27 +405,36 @@ async def search_available_numbers(
         if contains:
             search_params["contains"] = contains
 
-        # Search for available numbers
-        available = client.available_phone_numbers(country).local.list(**search_params)
+        # Get the right number type endpoint
+        country_numbers = client.available_phone_numbers(country)
+        if number_type == "mobile":
+            available = country_numbers.mobile.list(**search_params)
+        elif number_type == "toll_free":
+            available = country_numbers.toll_free.list(**search_params)
+        else:
+            available = country_numbers.local.list(**search_params)
 
         return [
             TwilioAvailableNumber(
                 phone_number=num.phone_number,
                 friendly_name=num.friendly_name,
-                locality=num.locality,
-                region=num.region,
+                locality=getattr(num, 'locality', None),
+                region=getattr(num, 'region', None),
                 country=country,
                 capabilities={
-                    "voice": num.capabilities.get("voice", False),
-                    "sms": num.capabilities.get("sms", False),
-                    "mms": num.capabilities.get("mms", False),
+                    "voice": num.capabilities.get("voice", False) if num.capabilities else False,
+                    "sms": num.capabilities.get("sms", False) if num.capabilities else False,
+                    "mms": num.capabilities.get("mms", False) if num.capabilities else False,
                 }
             )
             for num in available
         ]
     except TwilioRestException as e:
-        logger.error("twilio_search_error", error=str(e))
+        logger.error("twilio_search_error", error=str(e), country=country, number_type=number_type)
         raise HTTPException(status_code=400, detail=f"Twilio error: {e.msg}")
+    except Exception as e:
+        logger.error("twilio_search_error", error=str(e), country=country, number_type=number_type)
+        raise HTTPException(status_code=500, detail=f"Error searching numbers: {str(e)}")
 
 
 @router.post("/twilio/buy")
