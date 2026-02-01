@@ -3,10 +3,12 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from twilio.rest import Client as TwilioClient
+from twilio.base.exceptions import TwilioRestException
 
 from app.api.v1.endpoints.auth import get_current_user
 from app.core.config import settings
@@ -15,6 +17,16 @@ from app.core.logging import logger
 from app.models.phone_number import PhoneNumber
 from app.models.settings import TenantSettings
 from app.models.user import User
+
+
+def get_twilio_client() -> TwilioClient:
+    """Get Twilio client instance."""
+    if not settings.twilio_account_sid or not settings.twilio_auth_token:
+        raise HTTPException(
+            status_code=500,
+            detail="Twilio credentials not configured"
+        )
+    return TwilioClient(settings.twilio_account_sid, settings.twilio_auth_token)
 
 router = APIRouter()
 
@@ -357,3 +369,114 @@ async def check_admin(
     """Check if current user is an admin."""
     is_admin = current_user.email in ADMIN_EMAILS or current_user.is_admin
     return {"is_admin": is_admin, "email": current_user.email}
+
+
+# ============== Twilio Number Search & Purchase ==============
+
+class TwilioAvailableNumber(BaseModel):
+    phone_number: str
+    friendly_name: str
+    locality: Optional[str]
+    region: Optional[str]
+    country: str
+    capabilities: dict
+
+
+class BuyNumberRequest(BaseModel):
+    phone_number: str
+
+
+@router.get("/twilio/available", response_model=list[TwilioAvailableNumber])
+async def search_available_numbers(
+    country: str = Query(default="US", description="Country code (US, CA, GB, AU, etc.)"),
+    area_code: Optional[str] = Query(default=None, description="Area code to search"),
+    contains: Optional[str] = Query(default=None, description="Pattern the number should contain"),
+    admin: User = Depends(get_admin_user),
+):
+    """Search for available phone numbers to purchase from Twilio."""
+    try:
+        client = get_twilio_client()
+
+        # Build search parameters
+        search_params = {"voice_enabled": True, "limit": 20}
+        if area_code:
+            search_params["area_code"] = area_code
+        if contains:
+            search_params["contains"] = contains
+
+        # Search for available numbers
+        available = client.available_phone_numbers(country).local.list(**search_params)
+
+        return [
+            TwilioAvailableNumber(
+                phone_number=num.phone_number,
+                friendly_name=num.friendly_name,
+                locality=num.locality,
+                region=num.region,
+                country=country,
+                capabilities={
+                    "voice": num.capabilities.get("voice", False),
+                    "sms": num.capabilities.get("sms", False),
+                    "mms": num.capabilities.get("mms", False),
+                }
+            )
+            for num in available
+        ]
+    except TwilioRestException as e:
+        logger.error("twilio_search_error", error=str(e))
+        raise HTTPException(status_code=400, detail=f"Twilio error: {e.msg}")
+
+
+@router.post("/twilio/buy")
+async def buy_phone_number(
+    request: BuyNumberRequest,
+    admin: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Purchase a phone number from Twilio and add it to the pool."""
+    try:
+        client = get_twilio_client()
+
+        # Check if number already exists in our pool
+        existing = await db.execute(
+            select(PhoneNumber).where(PhoneNumber.number == request.phone_number)
+        )
+        if existing.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Number already in pool")
+
+        # Purchase the number from Twilio
+        purchased = client.incoming_phone_numbers.create(
+            phone_number=request.phone_number,
+            voice_url=f"{settings.api_base_url}/api/v1/voice/twilio/incoming",
+            voice_method="POST",
+        )
+
+        # Add to our phone number pool
+        phone_number = PhoneNumber(
+            number=purchased.phone_number,
+            twilio_sid=purchased.sid,
+            friendly_name=purchased.friendly_name,
+            country=purchased.phone_number[:2] if purchased.phone_number.startswith("+1") else "US",
+            voice_enabled=True,
+            sms_enabled=purchased.capabilities.get("sms", False),
+        )
+        db.add(phone_number)
+        await db.commit()
+        await db.refresh(phone_number)
+
+        logger.info(
+            "phone_number_purchased",
+            number=purchased.phone_number,
+            sid=purchased.sid,
+            admin=admin.email,
+        )
+
+        return {
+            "message": "Number purchased successfully",
+            "number": purchased.phone_number,
+            "sid": purchased.sid,
+        }
+
+    except TwilioRestException as e:
+        logger.error("twilio_purchase_error", error=str(e))
+        raise HTTPException(status_code=400, detail=f"Twilio error: {e.msg}")
