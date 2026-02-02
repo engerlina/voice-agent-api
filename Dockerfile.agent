@@ -8,19 +8,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
-COPY pyproject.toml .
-COPY agent/ agent/
+# Copy agent code and requirements
+COPY agent/requirements.txt .
+COPY agent/voice_agent.py .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -e .
-
-# Install additional agent plugins
-RUN pip install --no-cache-dir \
-    livekit-plugins-deepgram \
-    livekit-plugins-openai \
-    livekit-plugins-elevenlabs \
-    livekit-plugins-silero
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Run the agent
-CMD ["python", "agent/voice_agent.py", "start"]
+CMD ["python", "voice_agent.py", "start"]
