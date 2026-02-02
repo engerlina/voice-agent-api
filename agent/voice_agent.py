@@ -366,17 +366,13 @@ async def entrypoint(ctx: JobContext):
     if call_recording_enabled:
         recorder.add_transcript("agent", welcome_message)
 
-    # Keep the session alive until the room closes
-    # The session will handle the conversation automatically
-    try:
-        # Wait for disconnection
-        await ctx.room.disconnect()
-    except asyncio.CancelledError:
-        pass
-    finally:
-        # End the call and save remaining transcripts
-        if call_recording_enabled:
-            await recorder.end_call(ended_by="caller")
+    # Wait for the session to end (participant disconnects or call ends)
+    # The session handles the conversation loop automatically
+    await session.wait()
+
+    # End the call and save remaining transcripts
+    if call_recording_enabled:
+        await recorder.end_call(ended_by="caller")
 
 
 if __name__ == "__main__":
