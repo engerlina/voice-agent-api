@@ -3,11 +3,7 @@ builder = "dockerfile"
 # dockerfilePath is set via RAILWAY_DOCKERFILE_PATH env var per service
 
 [deploy]
-startCommand = "sh -c 'uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}'"
-healthcheckPath = "/health"
-healthcheckTimeout = 30
+# startCommand, healthcheckPath, and internalPort are set per-service via Railway variables
+# or in their respective Dockerfiles
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
-
-[service]
-internalPort = 8000
