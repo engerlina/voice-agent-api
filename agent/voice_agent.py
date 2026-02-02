@@ -262,22 +262,24 @@ async def entrypoint(ctx: JobContext):
             print(f"Could not parse room metadata: {ctx.room.metadata}")
 
     # For SIP calls, extract phone numbers from participant attributes
-    # LiveKit SIP provides: sip.callID, sip.callTo, sip.callFrom, sip.trunkId, etc.
+    # LiveKit SIP provides: sip.phoneNumber (caller), sip.trunkPhoneNumber (called), sip.trunkID, etc.
     attrs = participant.attributes or {}
 
     # Get the called number (our Twilio number) from SIP attributes
+    # sip.trunkPhoneNumber = "Phone number associated with SIP trunk. For inbound trunks, this is the number dialed in to"
     if not called_number:
-        sip_call_to = attrs.get("sip.callTo") or attrs.get("sip.calledNumber") or attrs.get("sip.to")
-        if sip_call_to:
-            called_number = extract_sip_number(sip_call_to)
-            print(f"SIP callTo: {sip_call_to} -> {called_number}")
+        sip_trunk_phone = attrs.get("sip.trunkPhoneNumber")
+        if sip_trunk_phone:
+            called_number = extract_sip_number(sip_trunk_phone)
+            print(f"SIP trunkPhoneNumber: {sip_trunk_phone} -> {called_number}")
 
     # Get the caller number from SIP attributes
+    # sip.phoneNumber = "User's phone number. For inbound trunks, this is the phone number the call originates from"
     if not caller_number:
-        sip_call_from = attrs.get("sip.callFrom") or attrs.get("sip.callingNumber") or attrs.get("sip.from")
-        if sip_call_from:
-            caller_number = extract_sip_number(sip_call_from)
-            print(f"SIP callFrom: {sip_call_from} -> {caller_number}")
+        sip_phone = attrs.get("sip.phoneNumber")
+        if sip_phone:
+            caller_number = extract_sip_number(sip_phone)
+            print(f"SIP phoneNumber: {sip_phone} -> {caller_number}")
 
     # Fallback: Extract caller number from participant identity
     if not caller_number:
