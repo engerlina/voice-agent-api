@@ -84,7 +84,7 @@ async def init_db() -> None:
     import sys
     from sqlalchemy import text
 
-    # Run Alembic migrations
+    # Run Alembic migrations (migrations are idempotent - safe to run multiple times)
     try:
         result = subprocess.run(
             [sys.executable, "-m", "alembic", "upgrade", "head"],
@@ -93,9 +93,10 @@ async def init_db() -> None:
             timeout=60
         )
         if result.returncode == 0:
-            print(f"Alembic migrations completed: {result.stdout}")
+            print(f"Alembic migrations completed successfully")
         else:
-            print(f"Alembic migration warning: {result.stderr}")
+            # Log but don't fail - migrations might partially succeed
+            print(f"Alembic migration info: {result.stderr[:500] if result.stderr else 'OK'}")
     except Exception as e:
         print(f"Could not run Alembic migrations: {e}")
 

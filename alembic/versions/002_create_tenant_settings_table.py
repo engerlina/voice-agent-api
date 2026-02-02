@@ -28,6 +28,8 @@ def column_exists(table_name: str, column_name: str) -> bool:
     """Check if column exists in table."""
     bind = op.get_bind()
     inspector = inspect(bind)
+    if not table_exists(table_name):
+        return False
     columns = [col['name'] for col in inspector.get_columns(table_name)]
     return column_name in columns
 
