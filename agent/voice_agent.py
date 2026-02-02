@@ -331,17 +331,16 @@ async def entrypoint(ctx: JobContext):
             user_id=user_id,
         )
 
-    # Create the agent with tenant-specific settings
-    agent = Agent(
-        instructions=instructions,
+    # Create the agent with tenant-specific instructions
+    agent = Agent(instructions=instructions)
+
+    # Start the agent session with STT/LLM/TTS configuration
+    session = AgentSession(
         vad=silero.VAD.load(),
         stt=deepgram.STT(),
         llm=openai.LLM(model=llm_model),
         tts=elevenlabs.TTS(voice_id=voice_id),
     )
-
-    # Start the agent session
-    session = AgentSession()
 
     # Set up transcript capture if recording is enabled
     if call_recording_enabled:
@@ -357,6 +356,15 @@ async def entrypoint(ctx: JobContext):
             if hasattr(msg, 'content'):
                 recorder.add_transcript("agent", msg.content)
 
+    # Register cleanup callback for when call ends
+    if call_recording_enabled:
+        async def on_shutdown():
+            """Save transcripts and end call when session ends."""
+            print("Call ending, saving transcripts...")
+            await recorder.end_call(ended_by="caller")
+
+        ctx.add_shutdown_callback(on_shutdown)
+
     await session.start(agent, room=ctx.room)
 
     # Greet the caller with tenant-specific welcome message
@@ -366,13 +374,8 @@ async def entrypoint(ctx: JobContext):
     if call_recording_enabled:
         recorder.add_transcript("agent", welcome_message)
 
-    # Wait for the session to end (participant disconnects or call ends)
-    # The session handles the conversation loop automatically
-    await session.wait()
-
-    # End the call and save remaining transcripts
-    if call_recording_enabled:
-        await recorder.end_call(ended_by="caller")
+    # Session continues running automatically - conversation loop is handled by AgentSession
+    # Cleanup happens via ctx.add_shutdown_callback when participant disconnects
 
 
 if __name__ == "__main__":
