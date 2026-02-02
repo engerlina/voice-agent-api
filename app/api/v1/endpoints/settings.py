@@ -143,3 +143,65 @@ async def get_available_models():
             "claude-3-haiku-20240307",
         ],
     )
+
+
+# Internal endpoint for voice agent to fetch settings by user_id
+class AgentSettingsResponse(BaseModel):
+    """Settings response for voice agent - includes all config needed."""
+    user_id: str
+    llm_provider: str
+    llm_model: str
+    stt_provider: str
+    tts_provider: str
+    elevenlabs_voice_id: str
+    system_prompt: Optional[str]
+    welcome_message: str
+    max_conversation_turns: int
+    rag_enabled: bool
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/agent/{user_id}", response_model=AgentSettingsResponse)
+async def get_agent_settings(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get settings for a user - internal endpoint for voice agent.
+
+    Note: This endpoint is intended for internal service-to-service calls.
+    In production, add authentication via internal API key or mTLS.
+    """
+    result = await db.execute(
+        select(TenantSettings).where(TenantSettings.user_id == user_id)
+    )
+    settings = result.scalar_one_or_none()
+
+    if not settings:
+        # Return defaults if no settings exist
+        return AgentSettingsResponse(
+            user_id=user_id,
+            llm_provider="openai",
+            llm_model="gpt-4o-mini",
+            stt_provider="deepgram",
+            tts_provider="elevenlabs",
+            elevenlabs_voice_id="21m00Tcm4TlvDq8ikWAM",
+            system_prompt=None,
+            welcome_message="Hello! How can I help you today?",
+            max_conversation_turns=50,
+            rag_enabled=True,
+        )
+
+    return AgentSettingsResponse(
+        user_id=user_id,
+        llm_provider=settings.llm_provider,
+        llm_model=settings.llm_model,
+        stt_provider=settings.stt_provider,
+        tts_provider=settings.tts_provider,
+        elevenlabs_voice_id=settings.elevenlabs_voice_id,
+        system_prompt=settings.system_prompt,
+        welcome_message=settings.welcome_message,
+        max_conversation_turns=settings.max_conversation_turns,
+        rag_enabled=settings.rag_enabled,
+    )

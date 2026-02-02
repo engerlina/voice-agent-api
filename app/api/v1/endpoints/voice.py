@@ -287,13 +287,23 @@ async def twilio_incoming_call(
     try:
         from app.services.livekit_service import LiveKitService
 
-        # Create LiveKit room for the call
+        # Create LiveKit room for the call with user context
         livekit = LiveKitService()
+
+        # Include user_id in metadata so agent can fetch tenant settings
+        import json
+        room_metadata = json.dumps({
+            "call_sid": call_sid,
+            "from": from_number,
+            "to": to_number,
+            "user_id": user_id,  # For tenant-specific settings
+        })
+
         await livekit.create_room(
             room_name=room_name,
             empty_timeout=300,  # 5 minutes
             max_participants=3,  # Caller + Agent + possible transfer
-            metadata={"call_sid": call_sid, "from": from_number, "to": to_number},
+            metadata=room_metadata,
         )
 
         logger.info("livekit_room_created", room_name=room_name, call_sid=call_sid)
