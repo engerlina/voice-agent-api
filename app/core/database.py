@@ -119,5 +119,15 @@ async def init_db() -> None:
                 "ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS stt_provider VARCHAR(50) DEFAULT 'deepgram' NOT NULL"
             ))
         except Exception:
-            # Column might already exist
+            pass
+
+        # Ensure tts_provider column has a default value (fix NOT NULL constraint)
+        try:
+            await conn.execute(text(
+                "ALTER TABLE tenant_settings ALTER COLUMN tts_provider SET DEFAULT 'elevenlabs'"
+            ))
+            await conn.execute(text(
+                "UPDATE tenant_settings SET tts_provider = 'elevenlabs' WHERE tts_provider IS NULL"
+            ))
+        except Exception:
             pass

@@ -34,6 +34,9 @@ class TenantSettings(Base):
     # STT Configuration (Speech-to-Text) - required by database
     stt_provider: Mapped[str] = mapped_column(String(50), default="deepgram", nullable=False)
 
+    # TTS Configuration (Text-to-Speech) - required by database
+    tts_provider: Mapped[str] = mapped_column(String(50), default="elevenlabs", nullable=False)
+
     # Voice Configuration (voice selection only - keys are global)
     elevenlabs_voice_id: Mapped[str] = mapped_column(String(100), default="21m00Tcm4TlvDq8ikWAM", nullable=False)
 
