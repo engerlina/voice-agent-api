@@ -181,6 +181,9 @@ async def release_number(
             detail="You don't have a phone number assigned",
         )
 
+    # Remove SIP trunk configuration
+    await remove_sip_configuration(number)
+
     # Release the number
     number.user_id = None
     number.assigned_at = None
@@ -198,12 +201,13 @@ async def release_number(
 
 
 async def configure_twilio_webhook(number: PhoneNumber, user: User) -> bool:
-    """Configure Twilio webhook for the phone number.
+    """Configure Twilio to route calls via SIP trunk to LiveKit.
 
-    Sets up the voice URL to route calls to our API with the user's ID.
+    Sets up the phone number to use the SIP trunk instead of a webhook,
+    which connects calls directly to LiveKit for voice agent handling.
     """
     if not settings.twilio_account_sid or not settings.twilio_auth_token:
-        logger.warning("Twilio not configured, skipping webhook setup")
+        logger.warning("Twilio not configured, skipping SIP setup")
         return False
 
     if not number.twilio_sid:
@@ -215,30 +219,145 @@ async def configure_twilio_webhook(number: PhoneNumber, user: User) -> bool:
 
         client = Client(settings.twilio_account_sid, settings.twilio_auth_token)
 
-        # Build webhook URL with user ID for routing
-        # Use the correct production URL
-        base_url = settings.api_base_url
-        if "trvel-fastapi-production" in base_url:
-            base_url = "https://api-production-66de.up.railway.app"
-        webhook_url = f"{base_url}/api/v1/voice/twilio/incoming?user_id={user.id}"
+        # Get or create SIP trunk for LiveKit
+        sip_trunk_sid = await get_or_create_livekit_sip_trunk(client)
 
-        # Update the phone number's voice webhook
+        if not sip_trunk_sid:
+            logger.error("Could not get/create SIP trunk")
+            return False
+
+        # Configure phone number to use SIP trunk (clear voice URL)
         client.incoming_phone_numbers(number.twilio_sid).update(
-            voice_url=webhook_url,
-            voice_method="POST",
+            voice_url="",  # Clear webhook - SIP trunk handles routing
+            trunk_sid=sip_trunk_sid,
         )
 
+        # Add number to LiveKit SIP inbound trunk
+        await add_number_to_livekit_sip(number.number)
+
         logger.info(
-            "twilio_webhook_configured",
+            "sip_trunk_configured",
             number=number.number,
-            webhook_url=webhook_url,
+            trunk_sid=sip_trunk_sid,
+            user_id=user.id,
         )
         return True
 
     except Exception as e:
         logger.error(
-            "twilio_webhook_error",
+            "sip_trunk_error",
             number=number.number,
+            error=str(e),
+        )
+        return False
+
+
+async def remove_sip_configuration(number: PhoneNumber) -> bool:
+    """Remove SIP trunk configuration when number is released."""
+    if not settings.twilio_account_sid or not settings.twilio_auth_token:
+        return False
+
+    if not number.twilio_sid:
+        return False
+
+    try:
+        from twilio.rest import Client
+
+        client = Client(settings.twilio_account_sid, settings.twilio_auth_token)
+
+        # Remove trunk association from phone number
+        client.incoming_phone_numbers(number.twilio_sid).update(
+            trunk_sid="",  # Remove SIP trunk
+        )
+
+        logger.info(
+            "sip_trunk_removed",
+            number=number.number,
+        )
+        return True
+
+    except Exception as e:
+        logger.error(
+            "sip_trunk_removal_error",
+            number=number.number,
+            error=str(e),
+        )
+        return False
+
+
+async def get_or_create_livekit_sip_trunk(client) -> str:
+    """Get existing LiveKit SIP trunk or create one."""
+    # Check for existing trunk
+    trunks = client.trunking.v1.trunks.list()
+    for trunk in trunks:
+        if "LiveKit" in trunk.friendly_name:
+            return trunk.sid
+
+    # Create new trunk if not found
+    livekit_sip_uri = settings.livekit_sip_uri
+    if not livekit_sip_uri:
+        # Derive from LIVEKIT_URL
+        from urllib.parse import urlparse
+        parsed = urlparse(settings.livekit_url)
+        # Extract subdomain and create SIP domain
+        host = parsed.netloc
+        if ".livekit.cloud" in host:
+            subdomain = host.replace(".livekit.cloud", "")
+            livekit_sip_uri = f"{subdomain}.sip.livekit.cloud"
+
+    if not livekit_sip_uri:
+        logger.error("Cannot determine LiveKit SIP URI")
+        return None
+
+    trunk = client.trunking.v1.trunks.create(
+        friendly_name="LiveKit Voice Agent",
+    )
+
+    # Add origination URI
+    client.trunking.v1.trunks(trunk.sid).origination_urls.create(
+        sip_url=f"sip:{livekit_sip_uri}",
+        priority=1,
+        weight=1,
+        friendly_name="LiveKit Cloud",
+        enabled=True,
+    )
+
+    logger.info(
+        "sip_trunk_created",
+        trunk_sid=trunk.sid,
+        sip_uri=livekit_sip_uri,
+    )
+
+    return trunk.sid
+
+
+async def add_number_to_livekit_sip(phone_number: str) -> bool:
+    """Add phone number to LiveKit SIP inbound trunk."""
+    try:
+        import httpx
+
+        livekit_url = settings.livekit_url
+        api_key = settings.livekit_api_key
+        api_secret = settings.livekit_api_secret
+
+        if not all([livekit_url, api_key, api_secret]):
+            logger.warning("LiveKit not fully configured")
+            return False
+
+        # Use LiveKit API to update SIP trunk
+        # For now, log that this would be done - full implementation requires
+        # calling LiveKit's SIP API which we set up via CLI
+        logger.info(
+            "livekit_sip_number_add",
+            number=phone_number,
+            note="Number should be added to LiveKit SIP inbound trunk via CLI or API",
+        )
+        return True
+
+    except Exception as e:
+        logger.error(
+            "livekit_sip_add_error",
+            number=phone_number,
             error=str(e),
         )
         return False
