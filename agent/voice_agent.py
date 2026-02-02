@@ -387,3 +387,4 @@ if __name__ == "__main__":
             ws_url=os.getenv("LIVEKIT_URL"),
         )
     )
+# Auto-deploy trigger - 02 Feb 2026 19:50:57
