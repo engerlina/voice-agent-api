@@ -1,12 +1,15 @@
 """LiveKit Voice Agent - handles incoming calls with AI voice assistant.
 
 This agent fetches tenant-specific settings from the API to customize
-the voice, LLM model, and behavior per user.
+the voice, LLM model, and behavior per user. It also records transcripts
+of conversations when call_recording_enabled is set.
 """
 
+import asyncio
 import json
 import os
-import re
+import time
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -20,6 +23,123 @@ load_dotenv()
 
 # API base URL for fetching tenant settings
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+
+
+class CallRecorder:
+    """Handles call recording and transcript storage."""
+
+    def __init__(self, api_base_url: str):
+        self.api_base_url = api_base_url
+        self.call_id: Optional[str] = None
+        self.transcripts: list[dict] = []
+        self.call_start_time: float = 0
+        self.agent_response_count: int = 0
+
+    async def create_call(
+        self,
+        room_name: str,
+        call_sid: Optional[str] = None,
+        caller_number: Optional[str] = None,
+        callee_number: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Create a call record in the API."""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_base_url}/api/v1/calls/internal/create",
+                    json={
+                        "room_name": room_name,
+                        "call_sid": call_sid,
+                        "caller_number": caller_number,
+                        "callee_number": callee_number,
+                        "user_id": user_id,
+                        "direction": "inbound",
+                    },
+                    timeout=5.0,
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    self.call_id = data.get("id")
+                    self.call_start_time = time.time()
+                    print(f"Call record created: {self.call_id}")
+                    return self.call_id
+        except Exception as e:
+            print(f"Error creating call record: {e}")
+        return None
+
+    def add_transcript(self, speaker: str, text: str, confidence: Optional[float] = None):
+        """Add a transcript entry."""
+        if not text.strip():
+            return
+
+        current_time_ms = int((time.time() - self.call_start_time) * 1000)
+
+        self.transcripts.append({
+            "speaker": speaker,
+            "text": text.strip(),
+            "confidence": confidence,
+            "start_time_ms": current_time_ms,
+            "end_time_ms": current_time_ms + 100,  # Approximate
+        })
+
+        if speaker == "agent":
+            self.agent_response_count += 1
+
+        print(f"[{speaker}] {text.strip()}")
+
+    async def save_transcripts(self) -> bool:
+        """Save accumulated transcripts to the API."""
+        if not self.call_id or not self.transcripts:
+            return False
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_base_url}/api/v1/calls/internal/transcripts",
+                    json={
+                        "call_id": self.call_id,
+                        "entries": self.transcripts,
+                    },
+                    timeout=5.0,
+                )
+                if response.status_code == 200:
+                    print(f"Saved {len(self.transcripts)} transcript entries")
+                    self.transcripts = []  # Clear after saving
+                    return True
+        except Exception as e:
+            print(f"Error saving transcripts: {e}")
+        return False
+
+    async def end_call(self, ended_by: str = "caller") -> bool:
+        """Mark the call as ended and save final data."""
+        if not self.call_id:
+            return False
+
+        # Save any remaining transcripts
+        await self.save_transcripts()
+
+        duration = int(time.time() - self.call_start_time) if self.call_start_time else 0
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_base_url}/api/v1/calls/internal/{self.call_id}/update",
+                    json={
+                        "status": "completed",
+                        "ended_at": datetime.now(timezone.utc).isoformat(),
+                        "duration_seconds": duration,
+                        "ended_by": ended_by,
+                        "agent_response_count": self.agent_response_count,
+                    },
+                    timeout=5.0,
+                )
+                if response.status_code == 200:
+                    print(f"Call ended: {self.call_id}, duration: {duration}s")
+                    return True
+        except Exception as e:
+            print(f"Error ending call: {e}")
+        return False
 
 
 async def fetch_tenant_settings_by_user(user_id: str) -> dict:
@@ -106,6 +226,8 @@ async def entrypoint(ctx: JobContext):
     # Try to get user_id from room metadata first
     user_id = None
     called_number = None
+    caller_number = None
+    call_sid = None
     room_metadata = {}
 
     if ctx.room.metadata:
@@ -113,9 +235,15 @@ async def entrypoint(ctx: JobContext):
             room_metadata = json.loads(ctx.room.metadata)
             user_id = room_metadata.get("user_id")
             called_number = room_metadata.get("to")  # The number that was called
-            print(f"Room metadata - user_id: {user_id}, to: {called_number}")
+            caller_number = room_metadata.get("from")  # The caller's number
+            call_sid = room_metadata.get("call_sid")
+            print(f"Room metadata - user_id: {user_id}, to: {called_number}, from: {caller_number}")
         except json.JSONDecodeError:
             print(f"Could not parse room metadata: {ctx.room.metadata}")
+
+    # Extract caller number from participant identity if not in metadata
+    if not caller_number:
+        caller_number = extract_phone_from_participant(participant.identity)
 
     # Fetch tenant-specific settings
     settings = None
@@ -130,21 +258,15 @@ async def entrypoint(ctx: JobContext):
         print(f"Fetching settings by called number: {called_number}")
         settings = await fetch_tenant_settings_by_phone(called_number)
 
-    # Method 3: Extract caller number from participant identity (for SIP calls)
-    if not settings:
-        caller_phone = extract_phone_from_participant(participant.identity)
-        if caller_phone:
-            print(f"Caller phone from identity: {caller_phone}")
-            # Note: This is the caller's number, not the called number
-            # We might need to look up by room name pattern instead
-
     # Use tenant settings or defaults
+    call_recording_enabled = False
     if settings:
         print(f"Using tenant settings for user: {settings.get('user_id', 'unknown')}")
         instructions = settings.get("system_prompt") or get_default_instructions()
         welcome_message = settings.get("welcome_message", "Hello! How can I help you today?")
         voice_id = settings.get("elevenlabs_voice_id", "21m00Tcm4TlvDq8ikWAM")
         llm_model = settings.get("llm_model", "gpt-4o-mini")
+        call_recording_enabled = settings.get("call_recording_enabled", False)
     else:
         print("Using default settings (no tenant settings found)")
         instructions = get_default_instructions()
@@ -154,6 +276,20 @@ async def entrypoint(ctx: JobContext):
 
     print(f"LLM Model: {llm_model}")
     print(f"Voice ID: {voice_id}")
+    print(f"Call Recording: {'enabled' if call_recording_enabled else 'disabled'}")
+
+    # Initialize call recorder
+    recorder = CallRecorder(API_BASE_URL)
+
+    # Create call record if recording is enabled
+    if call_recording_enabled:
+        await recorder.create_call(
+            room_name=ctx.room.name,
+            call_sid=call_sid,
+            caller_number=caller_number,
+            callee_number=called_number,
+            user_id=user_id,
+        )
 
     # Create the agent with tenant-specific settings
     agent = Agent(
@@ -166,10 +302,41 @@ async def entrypoint(ctx: JobContext):
 
     # Start the agent session
     session = AgentSession()
+
+    # Set up transcript capture if recording is enabled
+    if call_recording_enabled:
+        @session.on("user_speech_committed")
+        def on_user_speech(msg):
+            """Capture user (caller) speech."""
+            if hasattr(msg, 'content'):
+                recorder.add_transcript("caller", msg.content)
+
+        @session.on("agent_speech_committed")
+        def on_agent_speech(msg):
+            """Capture agent speech."""
+            if hasattr(msg, 'content'):
+                recorder.add_transcript("agent", msg.content)
+
     await session.start(agent, room=ctx.room)
 
     # Greet the caller with tenant-specific welcome message
     await session.say(welcome_message)
+
+    # If recording, save the welcome message
+    if call_recording_enabled:
+        recorder.add_transcript("agent", welcome_message)
+
+    # Keep the session alive until the room closes
+    # The session will handle the conversation automatically
+    try:
+        # Wait for disconnection
+        await ctx.room.disconnect()
+    except asyncio.CancelledError:
+        pass
+    finally:
+        # End the call and save remaining transcripts
+        if call_recording_enabled:
+            await recorder.end_call(ended_by="caller")
 
 
 if __name__ == "__main__":

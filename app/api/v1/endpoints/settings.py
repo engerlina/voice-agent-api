@@ -158,6 +158,7 @@ class AgentSettingsResponse(BaseModel):
     welcome_message: str
     max_conversation_turns: int
     rag_enabled: bool
+    call_recording_enabled: bool
 
     class Config:
         from_attributes = True
@@ -193,6 +194,7 @@ async def get_agent_settings_by_phone(
             welcome_message="Hello! How can I help you today?",
             max_conversation_turns=50,
             rag_enabled=True,
+            call_recording_enabled=False,
         )
 
     # Get user's settings
@@ -214,6 +216,7 @@ async def get_agent_settings_by_phone(
             welcome_message="Hello! How can I help you today?",
             max_conversation_turns=50,
             rag_enabled=True,
+            call_recording_enabled=False,
         )
 
     return AgentSettingsResponse(
@@ -227,6 +230,7 @@ async def get_agent_settings_by_phone(
         welcome_message=settings.welcome_message,
         max_conversation_turns=settings.max_conversation_turns,
         rag_enabled=settings.rag_enabled,
+        call_recording_enabled=settings.call_recording_enabled,
     )
 
 
@@ -255,6 +259,7 @@ async def get_agent_settings_by_user_id(
             welcome_message="Hello! How can I help you today?",
             max_conversation_turns=50,
             rag_enabled=True,
+            call_recording_enabled=False,
         )
 
     return AgentSettingsResponse(
@@ -268,4 +273,5 @@ async def get_agent_settings_by_user_id(
         welcome_message=settings.welcome_message,
         max_conversation_turns=settings.max_conversation_turns,
         rag_enabled=settings.rag_enabled,
+        call_recording_enabled=settings.call_recording_enabled,
     )
