@@ -1,0 +1,26 @@
+# Dockerfile for LiveKit Voice Agent
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY pyproject.toml .
+COPY agent/ agent/
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -e .
+
+# Install additional agent plugins
+RUN pip install --no-cache-dir \
+    livekit-plugins-deepgram \
+    livekit-plugins-openai \
+    livekit-plugins-elevenlabs \
+    livekit-plugins-silero
+
+# Run the agent
+CMD ["python", "agent/voice_agent.py", "start"]

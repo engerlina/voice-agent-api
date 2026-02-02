@@ -1,0 +1,27 @@
+# LiveKit SIP Configuration for Twilio Integration
+# Deploy with: lk sip inbound create sip_config.yaml
+
+# Inbound SIP Trunk - receives calls from Twilio
+inbound_trunk:
+  name: "twilio-inbound"
+  # Twilio SIP addresses that can send calls
+  allowed_addresses:
+    - "*.pstn.twilio.com"
+    - "*.sip.twilio.com"
+  # Optional: restrict to specific numbers
+  # allowed_numbers:
+  #   - "+1234567890"
+
+---
+# Dispatch Rule - routes incoming SIP calls to the voice agent
+dispatch_rule:
+  name: "voice-agent-dispatch"
+  # Match all incoming calls
+  trunk_ids: []  # Empty means all trunks
+  # Dispatch to our voice agent
+  rule:
+    dispatch_rule_direct:
+      room_prefix: "call-"
+      pin: ""
+  # Metadata to pass to the agent
+  metadata: '{"source": "twilio"}'

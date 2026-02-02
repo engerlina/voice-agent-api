@@ -41,6 +41,10 @@ dependencies = [
     # LiveKit (Voice Agent)
     "livekit>=0.11.0",
     "livekit-agents>=0.8.0",
+    "livekit-plugins-deepgram>=0.6.0",
+    "livekit-plugins-openai>=0.8.0",
+    "livekit-plugins-elevenlabs>=0.7.0",
+    "livekit-plugins-silero>=0.6.0",
 
     # AI/ML
     "openai>=1.10.0",
