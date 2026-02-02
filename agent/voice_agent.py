@@ -211,6 +211,23 @@ Key behaviors:
 You are currently handling a phone call. The caller has just connected."""
 
 
+def extract_sip_number(sip_uri: str) -> Optional[str]:
+    """Extract phone number from a SIP URI like 'sip:+61340525699@...'."""
+    if not sip_uri:
+        return None
+    # Handle formats like "sip:+61340525699@domain" or "+61340525699"
+    if sip_uri.startswith("sip:"):
+        sip_uri = sip_uri[4:]  # Remove 'sip:' prefix
+    # Extract number before @ if present
+    if "@" in sip_uri:
+        sip_uri = sip_uri.split("@")[0]
+    # Clean up and normalize
+    phone = sip_uri.strip()
+    if phone and not phone.startswith("+"):
+        phone = "+" + phone
+    return phone if phone else None
+
+
 async def entrypoint(ctx: JobContext):
     """Main entrypoint for the voice agent."""
 
@@ -222,6 +239,9 @@ async def entrypoint(ctx: JobContext):
 
     print(f"Participant joined: {participant.identity}")
     print(f"Room: {ctx.room.name}")
+
+    # Debug: Print all available participant attributes
+    print(f"Participant attributes: {participant.attributes}")
 
     # Try to get user_id from room metadata first
     user_id = None
@@ -241,7 +261,25 @@ async def entrypoint(ctx: JobContext):
         except json.JSONDecodeError:
             print(f"Could not parse room metadata: {ctx.room.metadata}")
 
-    # Extract caller number from participant identity if not in metadata
+    # For SIP calls, extract phone numbers from participant attributes
+    # LiveKit SIP provides: sip.callID, sip.callTo, sip.callFrom, sip.trunkId, etc.
+    attrs = participant.attributes or {}
+
+    # Get the called number (our Twilio number) from SIP attributes
+    if not called_number:
+        sip_call_to = attrs.get("sip.callTo") or attrs.get("sip.calledNumber") or attrs.get("sip.to")
+        if sip_call_to:
+            called_number = extract_sip_number(sip_call_to)
+            print(f"SIP callTo: {sip_call_to} -> {called_number}")
+
+    # Get the caller number from SIP attributes
+    if not caller_number:
+        sip_call_from = attrs.get("sip.callFrom") or attrs.get("sip.callingNumber") or attrs.get("sip.from")
+        if sip_call_from:
+            caller_number = extract_sip_number(sip_call_from)
+            print(f"SIP callFrom: {sip_call_from} -> {caller_number}")
+
+    # Fallback: Extract caller number from participant identity
     if not caller_number:
         caller_number = extract_phone_from_participant(participant.identity)
 
