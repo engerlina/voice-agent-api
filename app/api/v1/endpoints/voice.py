@@ -254,7 +254,17 @@ async def twilio_incoming_call(
         return Response(content=twiml, media_type="application/xml")
 
     # Check for LiveKit SIP URI (required for SIP trunk connection)
-    livekit_sip_uri = getattr(settings, 'livekit_sip_uri', None)
+    # Try explicit setting first, then derive from LIVEKIT_URL
+    livekit_sip_uri = getattr(settings, 'livekit_sip_uri', None) or ""
+
+    if not livekit_sip_uri and settings.livekit_url:
+        # Derive SIP domain from WebSocket URL
+        # wss://example.livekit.cloud -> example.livekit.cloud
+        # wss://your-livekit.railway.app -> your-livekit.railway.app
+        from urllib.parse import urlparse
+        parsed = urlparse(settings.livekit_url)
+        livekit_sip_uri = parsed.netloc or parsed.path
+        logger.info("derived_sip_uri", sip_uri=livekit_sip_uri, from_url=settings.livekit_url)
 
     if not livekit_sip_uri:
         # No SIP trunk configured - use basic TwiML with greeting
