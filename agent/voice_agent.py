@@ -6,6 +6,7 @@ the voice, LLM model, and behavior per user.
 
 import json
 import os
+import re
 from typing import Optional
 
 import httpx
@@ -21,22 +22,58 @@ load_dotenv()
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 
 
-async def fetch_tenant_settings(user_id: str) -> dict:
-    """Fetch tenant settings from the API."""
+async def fetch_tenant_settings_by_user(user_id: str) -> dict:
+    """Fetch tenant settings from the API by user_id."""
     if not user_id:
         return None
 
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"{API_BASE_URL}/api/v1/settings/agent/{user_id}",
+                f"{API_BASE_URL}/api/v1/settings/agent/user/{user_id}",
                 timeout=5.0,
             )
             if response.status_code == 200:
                 return response.json()
     except Exception as e:
-        print(f"Error fetching tenant settings: {e}")
+        print(f"Error fetching tenant settings by user_id: {e}")
 
+    return None
+
+
+async def fetch_tenant_settings_by_phone(phone_number: str) -> dict:
+    """Fetch tenant settings from the API by phone number."""
+    if not phone_number:
+        return None
+
+    try:
+        # URL encode the phone number (+ becomes %2B)
+        encoded_phone = phone_number.replace("+", "%2B")
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{API_BASE_URL}/api/v1/settings/agent/by-phone/{encoded_phone}",
+                timeout=5.0,
+            )
+            if response.status_code == 200:
+                return response.json()
+    except Exception as e:
+        print(f"Error fetching tenant settings by phone: {e}")
+
+    return None
+
+
+def extract_phone_from_participant(identity: str) -> Optional[str]:
+    """Extract phone number from participant identity.
+
+    LiveKit SIP participants have identities like 'sip_+61491491560'
+    """
+    if identity.startswith("sip_"):
+        # Extract the phone number after 'sip_'
+        phone = identity[4:]  # Remove 'sip_' prefix
+        # Normalize to E.164 format if needed
+        if phone and not phone.startswith("+"):
+            phone = "+" + phone
+        return phone
     return None
 
 
@@ -66,23 +103,44 @@ async def entrypoint(ctx: JobContext):
     print(f"Participant joined: {participant.identity}")
     print(f"Room: {ctx.room.name}")
 
-    # Parse room metadata to get user_id
+    # Try to get user_id from room metadata first
     user_id = None
+    called_number = None
     room_metadata = {}
+
     if ctx.room.metadata:
         try:
             room_metadata = json.loads(ctx.room.metadata)
             user_id = room_metadata.get("user_id")
-            print(f"User ID from room metadata: {user_id}")
+            called_number = room_metadata.get("to")  # The number that was called
+            print(f"Room metadata - user_id: {user_id}, to: {called_number}")
         except json.JSONDecodeError:
             print(f"Could not parse room metadata: {ctx.room.metadata}")
 
     # Fetch tenant-specific settings
-    settings = await fetch_tenant_settings(user_id) if user_id else None
+    settings = None
+
+    # Method 1: Try user_id from metadata
+    if user_id:
+        print(f"Fetching settings by user_id: {user_id}")
+        settings = await fetch_tenant_settings_by_user(user_id)
+
+    # Method 2: Try called number from metadata
+    if not settings and called_number:
+        print(f"Fetching settings by called number: {called_number}")
+        settings = await fetch_tenant_settings_by_phone(called_number)
+
+    # Method 3: Extract caller number from participant identity (for SIP calls)
+    if not settings:
+        caller_phone = extract_phone_from_participant(participant.identity)
+        if caller_phone:
+            print(f"Caller phone from identity: {caller_phone}")
+            # Note: This is the caller's number, not the called number
+            # We might need to look up by room name pattern instead
 
     # Use tenant settings or defaults
     if settings:
-        print(f"Using tenant settings for user: {user_id}")
+        print(f"Using tenant settings for user: {settings.get('user_id', 'unknown')}")
         instructions = settings.get("system_prompt") or get_default_instructions()
         welcome_message = settings.get("welcome_message", "Hello! How can I help you today?")
         voice_id = settings.get("elevenlabs_voice_id", "21m00Tcm4TlvDq8ikWAM")

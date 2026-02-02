@@ -163,16 +163,80 @@ class AgentSettingsResponse(BaseModel):
         from_attributes = True
 
 
-@router.get("/agent/{user_id}", response_model=AgentSettingsResponse)
-async def get_agent_settings(
+@router.get("/agent/by-phone/{phone_number:path}", response_model=AgentSettingsResponse)
+async def get_agent_settings_by_phone(
+    phone_number: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get settings by phone number - for voice agent when user_id is not available.
+
+    The phone number should be in E.164 format (e.g., +61340525699).
+    """
+    from app.models.phone_number import PhoneNumber
+
+    # Find user by phone number
+    result = await db.execute(
+        select(PhoneNumber).where(PhoneNumber.number == phone_number)
+    )
+    phone = result.scalar_one_or_none()
+
+    if not phone or not phone.user_id:
+        # Return defaults if phone not found or not assigned
+        return AgentSettingsResponse(
+            user_id="unknown",
+            llm_provider="openai",
+            llm_model="gpt-4o-mini",
+            stt_provider="deepgram",
+            tts_provider="elevenlabs",
+            elevenlabs_voice_id="21m00Tcm4TlvDq8ikWAM",
+            system_prompt=None,
+            welcome_message="Hello! How can I help you today?",
+            max_conversation_turns=50,
+            rag_enabled=True,
+        )
+
+    # Get user's settings
+    result = await db.execute(
+        select(TenantSettings).where(TenantSettings.user_id == phone.user_id)
+    )
+    settings = result.scalar_one_or_none()
+
+    if not settings:
+        # Return defaults for this user
+        return AgentSettingsResponse(
+            user_id=phone.user_id,
+            llm_provider="openai",
+            llm_model="gpt-4o-mini",
+            stt_provider="deepgram",
+            tts_provider="elevenlabs",
+            elevenlabs_voice_id="21m00Tcm4TlvDq8ikWAM",
+            system_prompt=None,
+            welcome_message="Hello! How can I help you today?",
+            max_conversation_turns=50,
+            rag_enabled=True,
+        )
+
+    return AgentSettingsResponse(
+        user_id=phone.user_id,
+        llm_provider=settings.llm_provider,
+        llm_model=settings.llm_model,
+        stt_provider=settings.stt_provider,
+        tts_provider=settings.tts_provider,
+        elevenlabs_voice_id=settings.elevenlabs_voice_id,
+        system_prompt=settings.system_prompt,
+        welcome_message=settings.welcome_message,
+        max_conversation_turns=settings.max_conversation_turns,
+        rag_enabled=settings.rag_enabled,
+    )
+
+
+# Keep the original user_id endpoint working
+@router.get("/agent/user/{user_id}", response_model=AgentSettingsResponse)
+async def get_agent_settings_by_user_id(
     user_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get settings for a user - internal endpoint for voice agent.
-
-    Note: This endpoint is intended for internal service-to-service calls.
-    In production, add authentication via internal API key or mTLS.
-    """
+    """Alias for get_agent_settings."""
     result = await db.execute(
         select(TenantSettings).where(TenantSettings.user_id == user_id)
     )
