@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     livekit_url: str = ""
     livekit_api_key: str = ""
     livekit_api_secret: str = ""
+    livekit_sip_uri: str = ""  # SIP trunk domain for Twilio→LiveKit (e.g., "sip.livekit.cloud")
 
     # Deepgram (STT for Voice Agent)
     deepgram_api_key: str = ""

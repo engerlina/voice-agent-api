@@ -219,8 +219,15 @@ async def search_documents(
 
 
 @router.post("/twilio/incoming")
-async def twilio_incoming_call(request: Request):
-    """Handle incoming Twilio voice calls - main webhook endpoint."""
+async def twilio_incoming_call(
+    request: Request,
+    user_id: str | None = Query(default=None, description="User ID for routing"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Handle incoming Twilio voice calls - main webhook endpoint.
+
+    This connects the caller to a LiveKit room via SIP trunk for AI agent interaction.
+    """
     form_data = await request.form()
     call_sid = form_data.get("CallSid")
     from_number = form_data.get("From")
@@ -233,14 +240,74 @@ async def twilio_incoming_call(request: Request):
         from_number=from_number,
         to_number=to_number,
         status=call_status,
+        user_id=user_id,
     )
 
-    # Return TwiML response
-    twiml = """<?xml version="1.0" encoding="UTF-8"?>
+    # Check if voice agent is properly configured
+    if not settings.voice_agent_enabled:
+        logger.warning("voice_agent_not_configured", call_sid=call_sid)
+        twiml = """<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say voice="alice">Hello! Thank you for calling. This is your AI voice assistant. How can I help you today?</Say>
-    <Pause length="2"/>
-    <Say voice="alice">I'm sorry, but the voice agent is still being configured. Please try again later. Goodbye!</Say>
+    <Say voice="Polly.Amy">I'm sorry, the voice agent is not configured. Please contact support. Goodbye!</Say>
+    <Hangup/>
+</Response>"""
+        return Response(content=twiml, media_type="application/xml")
+
+    # Check for LiveKit SIP URI (required for SIP trunk connection)
+    livekit_sip_uri = getattr(settings, 'livekit_sip_uri', None)
+
+    if not livekit_sip_uri:
+        # No SIP trunk configured - use basic TwiML with greeting
+        # The voice agent would need a separate process to connect via WebRTC
+        logger.warning("livekit_sip_not_configured", call_sid=call_sid)
+
+        # For now, provide a helpful response
+        twiml = """<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="Polly.Amy">Hello! Thank you for calling. I'm your AI voice assistant.</Say>
+    <Pause length="1"/>
+    <Say voice="Polly.Amy">The LiveKit SIP trunk is being configured. Please try again shortly. Goodbye!</Say>
+    <Hangup/>
+</Response>"""
+        return Response(content=twiml, media_type="application/xml")
+
+    # Generate a unique room name for this call
+    room_name = f"call_{call_sid}"
+
+    try:
+        from app.services.livekit_service import LiveKitService
+
+        # Create LiveKit room for the call
+        livekit = LiveKitService()
+        await livekit.create_room(
+            room_name=room_name,
+            empty_timeout=300,  # 5 minutes
+            max_participants=3,  # Caller + Agent + possible transfer
+            metadata={"call_sid": call_sid, "from": from_number, "to": to_number},
+        )
+
+        logger.info("livekit_room_created", room_name=room_name, call_sid=call_sid)
+
+        # Build SIP URI for the LiveKit room
+        # Format: sip:<room_name>@<livekit_sip_domain>
+        sip_uri = f"sip:{room_name}@{livekit_sip_uri}"
+
+        # Return TwiML that dials the LiveKit SIP endpoint
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Dial callerId="{to_number}" timeout="30">
+        <Sip>{sip_uri}</Sip>
+    </Dial>
+</Response>"""
+
+        logger.info("twilio_dial_sip", sip_uri=sip_uri, call_sid=call_sid)
+
+    except Exception as e:
+        logger.error("livekit_room_creation_failed", error=str(e), call_sid=call_sid)
+        twiml = """<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="Polly.Amy">I'm sorry, there was an error connecting your call. Please try again later.</Say>
+    <Hangup/>
 </Response>"""
 
     return Response(content=twiml, media_type="application/xml")
