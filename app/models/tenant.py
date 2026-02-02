@@ -124,7 +124,7 @@ class TenantConfig(Base, TimestampMixin):
     rag_similarity_threshold: Mapped[float] = mapped_column(default=0.7)
 
     # Custom metadata
-    metadata: Mapped[dict | None] = mapped_column(JSON)
+    extra_data: Mapped[dict | None] = mapped_column("metadata", JSON)
 
     # Relationships
     tenant: Mapped["Tenant"] = relationship("Tenant", back_populates="config")

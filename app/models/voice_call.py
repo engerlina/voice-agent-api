@@ -73,7 +73,7 @@ class Call(Base, TimestampMixin, TenantMixin):
     total_tokens_used: Mapped[int] = mapped_column(Integer, default=0)
 
     # Metadata
-    metadata: Mapped[dict | None] = mapped_column(JSON)
+    extra_data: Mapped[dict | None] = mapped_column("metadata", JSON)
 
     # Relationships
     tenant: Mapped["Tenant"] = relationship("Tenant", back_populates="calls")

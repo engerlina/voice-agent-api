@@ -4,15 +4,9 @@ from typing import AsyncGenerator
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import settings
-
-
-class Base(DeclarativeBase):
-    """SQLAlchemy declarative base class."""
-
-    pass
+from app.db.base import Base  # noqa: F401 - re-export for backwards compatibility
 
 
 # Query parameters that Supabase adds but asyncpg doesn't support

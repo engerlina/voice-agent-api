@@ -59,7 +59,7 @@ class Document(Base, TimestampMixin, TenantMixin):
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
 
     # Metadata
-    metadata: Mapped[dict | None] = mapped_column(JSON)
+    extra_data: Mapped[dict | None] = mapped_column("metadata", JSON)
 
     # Relationships
     tenant: Mapped["Tenant"] = relationship("Tenant", back_populates="documents")
@@ -90,7 +90,7 @@ class DocumentChunk(Base, TimestampMixin):
     embedding: Mapped[list[float] | None] = mapped_column(Vector(1536))
 
     # Metadata
-    metadata: Mapped[dict | None] = mapped_column(JSON)
+    extra_data: Mapped[dict | None] = mapped_column("metadata", JSON)
     token_count: Mapped[int | None] = mapped_column(Integer)
 
     # Relationships
