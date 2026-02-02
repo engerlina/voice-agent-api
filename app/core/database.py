@@ -79,11 +79,28 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    """Initialize database tables."""
+    """Initialize database tables and run migrations."""
+    import subprocess
+    import sys
     from sqlalchemy import text
 
+    # Run Alembic migrations
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        if result.returncode == 0:
+            print(f"Alembic migrations completed: {result.stdout}")
+        else:
+            print(f"Alembic migration warning: {result.stderr}")
+    except Exception as e:
+        print(f"Could not run Alembic migrations: {e}")
+
     async with engine.begin() as conn:
-        # Create tables if they don't exist
+        # Create tables if they don't exist (fallback)
         await conn.run_sync(Base.metadata.create_all)
 
         # Add is_admin column to users table if it doesn't exist
@@ -93,4 +110,13 @@ async def init_db() -> None:
             ))
         except Exception:
             # Column might already exist or DB doesn't support IF NOT EXISTS
+            pass
+
+        # Ensure stt_provider column exists in tenant_settings
+        try:
+            await conn.execute(text(
+                "ALTER TABLE tenant_settings ADD COLUMN IF NOT EXISTS stt_provider VARCHAR(50) DEFAULT 'deepgram' NOT NULL"
+            ))
+        except Exception:
+            # Column might already exist
             pass
