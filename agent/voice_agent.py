@@ -344,17 +344,15 @@ async def entrypoint(ctx: JobContext):
 
     # Set up transcript capture if recording is enabled
     if call_recording_enabled:
-        @session.on("user_speech_committed")
-        def on_user_speech(msg):
-            """Capture user (caller) speech."""
-            if hasattr(msg, 'content'):
-                recorder.add_transcript("caller", msg.content)
-
-        @session.on("agent_speech_committed")
-        def on_agent_speech(msg):
-            """Capture agent speech."""
-            if hasattr(msg, 'content'):
-                recorder.add_transcript("agent", msg.content)
+        @session.on("conversation_item_added")
+        def on_conversation_item(event):
+            """Capture conversation items (user and agent messages)."""
+            item = event.item
+            role = item.role  # "user" or "assistant"
+            text = item.text_content
+            if text:
+                speaker = "caller" if role == "user" else "agent"
+                recorder.add_transcript(speaker, text)
 
     # Register cleanup callback for when call ends
     if call_recording_enabled:
@@ -368,11 +366,8 @@ async def entrypoint(ctx: JobContext):
     await session.start(agent, room=ctx.room)
 
     # Greet the caller with tenant-specific welcome message
+    # The conversation_item_added event will capture this for transcripts
     await session.say(welcome_message)
-
-    # If recording, save the welcome message
-    if call_recording_enabled:
-        recorder.add_transcript("agent", welcome_message)
 
     # Session continues running automatically - conversation loop is handled by AgentSession
     # Cleanup happens via ctx.add_shutdown_callback when participant disconnects
