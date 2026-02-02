@@ -216,7 +216,11 @@ async def configure_twilio_webhook(number: PhoneNumber, user: User) -> bool:
         client = Client(settings.twilio_account_sid, settings.twilio_auth_token)
 
         # Build webhook URL with user ID for routing
-        webhook_url = f"{settings.api_base_url}/api/v1/voice/webhooks/twilio/voice?user_id={user.id}"
+        # Use the correct production URL
+        base_url = settings.api_base_url
+        if "trvel-fastapi-production" in base_url:
+            base_url = "https://api-production-66de.up.railway.app"
+        webhook_url = f"{base_url}/api/v1/voice/twilio/incoming?user_id={user.id}"
 
         # Update the phone number's voice webhook
         client.incoming_phone_numbers(number.twilio_sid).update(

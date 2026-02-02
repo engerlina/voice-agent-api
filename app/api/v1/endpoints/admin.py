@@ -362,6 +362,54 @@ async def unassign_phone_number(
     return {"message": "Phone number unassigned"}
 
 
+@router.post("/phone-numbers/{number_id}/fix-webhook")
+async def fix_phone_number_webhook(
+    number_id: str,
+    admin: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Fix the Twilio webhook URL for a phone number."""
+    result = await db.execute(
+        select(PhoneNumber).where(PhoneNumber.id == number_id)
+    )
+    number = result.scalar_one_or_none()
+
+    if not number:
+        raise HTTPException(status_code=404, detail="Phone number not found")
+
+    if not number.twilio_sid:
+        raise HTTPException(status_code=400, detail="Phone number has no Twilio SID")
+
+    try:
+        client = get_twilio_client()
+
+        # Use correct production URL
+        base_url = "https://api-production-66de.up.railway.app"
+        user_param = f"?user_id={number.user_id}" if number.user_id else ""
+        webhook_url = f"{base_url}/api/v1/voice/twilio/incoming{user_param}"
+
+        client.incoming_phone_numbers(number.twilio_sid).update(
+            voice_url=webhook_url,
+            voice_method="POST",
+        )
+
+        number.webhook_configured = True
+        await db.commit()
+
+        logger.info(
+            "phone_webhook_fixed",
+            number=number.number,
+            webhook_url=webhook_url,
+            admin=admin.email,
+        )
+
+        return {"message": "Webhook fixed", "webhook_url": webhook_url}
+
+    except TwilioRestException as e:
+        logger.error("twilio_webhook_fix_error", error=str(e))
+        raise HTTPException(status_code=400, detail=f"Twilio error: {e.msg}")
+
+
 @router.get("/check")
 async def check_admin(
     current_user: User = Depends(get_current_user),
@@ -384,6 +432,45 @@ class TwilioAvailableNumber(BaseModel):
 
 class BuyNumberRequest(BaseModel):
     phone_number: str
+    address_sid: Optional[str] = None
+
+
+class TwilioAddress(BaseModel):
+    sid: str
+    friendly_name: str
+    customer_name: str
+    street: str
+    city: str
+    region: str
+    postal_code: str
+    country: str
+
+
+@router.get("/twilio/addresses", response_model=list[TwilioAddress])
+async def list_twilio_addresses(
+    admin: User = Depends(get_admin_user),
+):
+    """List all addresses in the Twilio account."""
+    try:
+        client = get_twilio_client()
+        addresses = client.addresses.list(limit=50)
+
+        return [
+            TwilioAddress(
+                sid=addr.sid,
+                friendly_name=addr.friendly_name or "",
+                customer_name=addr.customer_name or "",
+                street=addr.street or "",
+                city=addr.city or "",
+                region=addr.region or "",
+                postal_code=addr.postal_code or "",
+                country=addr.iso_country or "",
+            )
+            for addr in addresses
+        ]
+    except TwilioRestException as e:
+        logger.error("twilio_address_list_error", error=str(e))
+        raise HTTPException(status_code=400, detail=f"Twilio error: {e.msg}")
 
 
 @router.get("/twilio/available", response_model=list[TwilioAvailableNumber])
@@ -454,12 +541,32 @@ async def buy_phone_number(
         if existing.scalar_one_or_none():
             raise HTTPException(status_code=400, detail="Number already in pool")
 
+        # Build purchase params - use correct production URL
+        base_url = settings.api_base_url
+        if "trvel-fastapi-production" in base_url:
+            base_url = "https://api-production-66de.up.railway.app"
+
+        purchase_params = {
+            "phone_number": request.phone_number,
+            "voice_url": f"{base_url}/api/v1/voice/twilio/incoming",
+            "voice_method": "POST",
+        }
+
+        # Add address SID if provided (required for AU, GB, and some other countries)
+        if request.address_sid:
+            purchase_params["address_sid"] = request.address_sid
+        else:
+            # Try to get the first available address as fallback
+            try:
+                addresses = client.addresses.list(limit=1)
+                if addresses:
+                    purchase_params["address_sid"] = addresses[0].sid
+                    logger.info("using_default_address", address_sid=addresses[0].sid)
+            except Exception:
+                pass  # No address available, proceed without
+
         # Purchase the number from Twilio
-        purchased = client.incoming_phone_numbers.create(
-            phone_number=request.phone_number,
-            voice_url=f"{settings.api_base_url}/api/v1/voice/twilio/incoming",
-            voice_method="POST",
-        )
+        purchased = client.incoming_phone_numbers.create(**purchase_params)
 
         # Add to our phone number pool
         phone_number = PhoneNumber(

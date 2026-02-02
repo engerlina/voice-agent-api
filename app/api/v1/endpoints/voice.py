@@ -4,7 +4,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -217,13 +218,40 @@ async def search_documents(
     )
 
 
+@router.post("/twilio/incoming")
+async def twilio_incoming_call(request: Request):
+    """Handle incoming Twilio voice calls - main webhook endpoint."""
+    form_data = await request.form()
+    call_sid = form_data.get("CallSid")
+    from_number = form_data.get("From")
+    to_number = form_data.get("To")
+    call_status = form_data.get("CallStatus")
+
+    logger.info(
+        "twilio_incoming_call",
+        call_sid=call_sid,
+        from_number=from_number,
+        to_number=to_number,
+        status=call_status,
+    )
+
+    # Return TwiML response
+    twiml = """<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="alice">Hello! Thank you for calling. This is your AI voice assistant. How can I help you today?</Say>
+    <Pause length="2"/>
+    <Say voice="alice">I'm sorry, but the voice agent is still being configured. Please try again later. Goodbye!</Say>
+</Response>"""
+
+    return Response(content=twiml, media_type="application/xml")
+
+
 @router.post("/webhooks/twilio/voice")
-async def twilio_voice_webhook(
-    request: dict[str, Any],
-):
-    """Handle incoming Twilio voice webhooks."""
-    call_sid = request.get("CallSid")
-    call_status = request.get("CallStatus")
+async def twilio_voice_webhook(request: Request):
+    """Handle incoming Twilio voice webhooks (legacy endpoint)."""
+    form_data = await request.form()
+    call_sid = form_data.get("CallSid")
+    call_status = form_data.get("CallStatus")
 
     logger.info(
         "twilio_webhook",
@@ -232,13 +260,12 @@ async def twilio_voice_webhook(
     )
 
     # Return TwiML response
-    return {
-        "response": """<?xml version='1.0' encoding='UTF-8'?>
+    twiml = """<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>Hello! Thank you for calling Trvel support. How can I help you today?</Say>
-    <Pause length='1'/>
+    <Say voice="alice">Hello! Thank you for calling.</Say>
 </Response>"""
-    }
+
+    return Response(content=twiml, media_type="application/xml")
 
 
 @router.post("/webhooks/livekit")

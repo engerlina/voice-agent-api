@@ -1,11 +1,11 @@
-"""Trvel FastAPI Application - Premium eSIM Provider for Australian Travelers.
+"""Voice Agent API - Inbound Voice Agent Bot with Tool Capabilities.
 
-This is the main entry point for the Trvel API.
+This is the main entry point for the Voice Agent API.
 """
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -14,13 +14,33 @@ from app.core.config import settings
 from app.core.database import init_db
 from app.core.logging import logger, setup_logging
 
+# Allowed CORS origins
+CORS_ORIGINS = [
+    "https://voice-agent-dashboard-jade.vercel.app",
+    "https://voice-agent-dashboard.vercel.app",
+    "http://localhost:3000",
+]
+
+
+def get_cors_headers(request: Request) -> dict:
+    """Get CORS headers based on request origin."""
+    origin = request.headers.get("origin", "")
+    if origin in CORS_ORIGINS:
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    return {}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup
     setup_logging()
-    logger.info("Starting Trvel API", version="1.0.0", env=settings.app_env)
+    logger.info("Starting Voice Agent API", version="1.0.0", env=settings.app_env)
 
     # Initialize database (create tables if needed)
     await init_db()
@@ -29,31 +49,33 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    logger.info("Shutting down Trvel API")
+    logger.info("Shutting down Voice Agent API")
 
 
 # Create FastAPI application
 app = FastAPI(
     title=settings.app_name,
     description="""
-## Trvel eSIM API
+## Voice Agent API
 
-Premium travel eSIM provider for Australian travelers.
+Inbound Voice Agent Bot with AI-powered conversations and tool capabilities.
 
 ### Key Features
-- **Instant QR Delivery**: eSIM QR codes delivered within seconds of payment
-- **Multi-Channel Delivery**: Email → SMS → WhatsApp fallback
-- **10-Minute Guarantee**: Automatic refund if customer can't connect
-- **AI-Powered Support**: Intelligent support triage with 3-minute response SLA
-- **Global Coverage**: 190+ destinations worldwide
+- **Inbound Call Handling**: Answer and manage incoming voice calls via Twilio
+- **AI-Powered Conversations**: Natural language processing for voice interactions
+- **Tool Integration**: Execute actions during calls (send SMS, lookup data, etc.)
+- **Phone Number Management**: Search and provision Twilio phone numbers
+- **Real-time Transcription**: Live speech-to-text for call handling
 
-### SLA Guarantees
-- QR Code Delivery: < 30 seconds
-- Support First Response: < 3 minutes
-- Connection Guarantee: 10 minutes or full refund
+### Available Tools
+- **Send SMS**: Send text messages to callers or third parties
+- **Data Lookup**: Query databases and external APIs during calls
+- **Call Transfer**: Route calls to appropriate departments or agents
+- **Appointment Scheduling**: Book and manage appointments
+- **Custom Actions**: Extensible tool framework for business-specific needs
 
 ### Authentication
-All endpoints require API key authentication via `x-api-key` header.
+API endpoints require authentication via Bearer token or API key.
     """,
     version="1.0.0",
     docs_url="/docs" if settings.debug else None,
@@ -65,21 +87,27 @@ All endpoints require API key authentication via `x-api-key` header.
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://trvel.co",
-        "https://www.trvel.co",
-        "https://app.trvel.co",
-        "https://voice-agent-dashboard-jade.vercel.app",
-        "https://voice-agent-dashboard.vercel.app",
-        "http://localhost:3000",  # Development
-    ],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 
-# Global exception handler
+# HTTP exception handler (4xx errors)
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Handle HTTP exceptions with CORS headers."""
+    cors_headers = get_cors_headers(request)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=cors_headers,
+    )
+
+
+# Global exception handler (5xx errors)
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Handle uncaught exceptions."""
@@ -91,16 +119,21 @@ async def global_exception_handler(request: Request, exc: Exception):
         exc_info=True,
     )
 
+    # Get CORS headers for the response
+    cors_headers = get_cors_headers(request)
+
     # Don't expose internal errors in production
     if settings.is_production:
         return JSONResponse(
             status_code=500,
             content={"detail": "Internal server error"},
+            headers=cors_headers,
         )
 
     return JSONResponse(
         status_code=500,
         content={"detail": str(exc)},
+        headers=cors_headers,
     )
 
 
