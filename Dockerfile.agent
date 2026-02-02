@@ -15,5 +15,8 @@ COPY agent/voice_agent.py .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# LiveKit agent listens on 8081 for internal health/metrics
+EXPOSE 8081
+
 # Run the agent
 CMD ["python", "voice_agent.py", "start"]
