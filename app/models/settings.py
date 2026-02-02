@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Optional
 import uuid
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -31,23 +31,11 @@ class TenantSettings(Base):
     llm_provider: Mapped[str] = mapped_column(String(50), default="openai", nullable=False)
     llm_model: Mapped[str] = mapped_column(String(100), default="gpt-4-turbo-preview", nullable=False)
 
-    # STT Configuration (Speech-to-Text)
+    # STT Configuration (Speech-to-Text) - required by database
     stt_provider: Mapped[str] = mapped_column(String(50), default="deepgram", nullable=False)
-    stt_model: Mapped[Optional[str]] = mapped_column(String(100), default="nova-2", nullable=True)
-
-    # TTS Configuration (Text-to-Speech)
-    tts_provider: Mapped[str] = mapped_column(String(50), default="elevenlabs", nullable=False)
-    tts_model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    tts_voice: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
     # Voice Configuration (voice selection only - keys are global)
     elevenlabs_voice_id: Mapped[str] = mapped_column(String(100), default="21m00Tcm4TlvDq8ikWAM", nullable=False)
-
-    # Additional voice settings
-    voice_speed: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    voice_pitch: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    silence_timeout_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    max_call_duration_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # Agent Behavior
     system_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
