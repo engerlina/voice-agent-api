@@ -301,7 +301,10 @@ async def entrypoint(ctx: JobContext):
     # Use tenant settings or defaults
     call_recording_enabled = False
     if settings:
-        print(f"Using tenant settings for user: {settings.get('user_id', 'unknown')}")
+        # Update user_id from settings if not already set (e.g., when fetched by phone number)
+        if not user_id:
+            user_id = settings.get("user_id")
+        print(f"Using tenant settings for user: {user_id or 'unknown'}")
         instructions = settings.get("system_prompt") or get_default_instructions()
         welcome_message = settings.get("welcome_message", "Hello! How can I help you today?")
         voice_id = settings.get("elevenlabs_voice_id", "21m00Tcm4TlvDq8ikWAM")

@@ -1,16 +1,18 @@
 """Call management endpoints for voice agent integration."""
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.endpoints.auth import get_current_user
 from app.core.database import get_db
 from app.core.logging import logger
 from app.models.call_log import CallLog, CallTranscriptLog
+from app.models.user import User
 
 router = APIRouter()
 
@@ -199,3 +201,139 @@ async def get_call_transcripts(
             for t in transcripts
         ],
     }
+
+
+# ============== User-Facing Endpoints ==============
+# These require authentication and return calls for the current user
+
+class TranscriptResponse(BaseModel):
+    """Transcript entry response."""
+    speaker: str
+    text: str
+    confidence: Optional[float]
+    start_time_ms: int
+    end_time_ms: int
+
+
+class CallDetailResponse(BaseModel):
+    """Detailed call response with transcripts."""
+    id: str
+    room_name: str
+    call_sid: Optional[str]
+    direction: str
+    status: str
+    caller_number: Optional[str]
+    callee_number: Optional[str]
+    started_at: Optional[datetime]
+    ended_at: Optional[datetime]
+    duration_seconds: Optional[int]
+    ended_by: Optional[str]
+    agent_response_count: int
+    transcripts: List[TranscriptResponse]
+
+    class Config:
+        from_attributes = True
+
+
+class CallListResponse(BaseModel):
+    """Call list item response."""
+    id: str
+    direction: str
+    status: str
+    caller_number: Optional[str]
+    callee_number: Optional[str]
+    started_at: Optional[datetime]
+    ended_at: Optional[datetime]
+    duration_seconds: Optional[int]
+    agent_response_count: int
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("", response_model=List[CallListResponse])
+async def list_user_calls(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    limit: int = 50,
+    offset: int = 0,
+):
+    """List all calls for the current user."""
+    result = await db.execute(
+        select(CallLog)
+        .where(CallLog.user_id == current_user.id)
+        .order_by(desc(CallLog.started_at))
+        .limit(limit)
+        .offset(offset)
+    )
+    calls = result.scalars().all()
+
+    return [
+        CallListResponse(
+            id=call.id,
+            direction=call.direction or "inbound",
+            status=call.status or "unknown",
+            caller_number=call.caller_number,
+            callee_number=call.callee_number,
+            started_at=call.started_at,
+            ended_at=call.ended_at,
+            duration_seconds=call.duration_seconds,
+            agent_response_count=call.agent_response_count or 0,
+        )
+        for call in calls
+    ]
+
+
+@router.get("/{call_id}", response_model=CallDetailResponse)
+async def get_user_call(
+    call_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a specific call with transcripts for the current user."""
+    # Get the call
+    result = await db.execute(
+        select(CallLog)
+        .where(CallLog.id == call_id)
+        .where(CallLog.user_id == current_user.id)
+    )
+    call = result.scalar_one_or_none()
+
+    if not call:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call not found",
+        )
+
+    # Get transcripts
+    transcripts_result = await db.execute(
+        select(CallTranscriptLog)
+        .where(CallTranscriptLog.call_id == call_id)
+        .order_by(CallTranscriptLog.start_time_ms)
+    )
+    transcripts = transcripts_result.scalars().all()
+
+    return CallDetailResponse(
+        id=call.id,
+        room_name=call.room_name,
+        call_sid=call.call_sid,
+        direction=call.direction or "inbound",
+        status=call.status or "unknown",
+        caller_number=call.caller_number,
+        callee_number=call.callee_number,
+        started_at=call.started_at,
+        ended_at=call.ended_at,
+        duration_seconds=call.duration_seconds,
+        ended_by=call.ended_by,
+        agent_response_count=call.agent_response_count or 0,
+        transcripts=[
+            TranscriptResponse(
+                speaker=t.speaker,
+                text=t.text,
+                confidence=t.confidence,
+                start_time_ms=t.start_time_ms,
+                end_time_ms=t.end_time_ms,
+            )
+            for t in transcripts
+        ],
+    )
