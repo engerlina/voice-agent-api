@@ -110,8 +110,13 @@ class TenantConfig(Base, TimestampMixin):
         default="Hello! Thank you for calling. How can I help you today?",
     )
     voice_id: Mapped[str | None] = mapped_column(String(100))
-    llm_model: Mapped[str] = mapped_column(String(100), default="gpt-4-turbo-preview")
+    llm_model: Mapped[str] = mapped_column(String(100), default="gpt-4o-mini")
     temperature: Mapped[float] = mapped_column(default=0.7)
+
+    # Language settings (common Australian languages)
+    # Supported: en, zh (Mandarin), yue (Cantonese), vi, ar, el, it, hi, tl, es, ko
+    language: Mapped[str] = mapped_column(String(10), default="en")
+    auto_detect_language: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Call routing
     transfer_number: Mapped[str | None] = mapped_column(String(50))

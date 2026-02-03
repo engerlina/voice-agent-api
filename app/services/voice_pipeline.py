@@ -1,4 +1,4 @@
-"""Voice AI pipeline orchestrator (STT -> LLM -> TTS)."""
+"""Voice AI pipeline orchestrator (STT -> LLM -> TTS) with multilingual support."""
 
 import asyncio
 import uuid
@@ -16,9 +16,127 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.models.call import Call, CallTranscript
 from app.models.tenant import TenantConfig
-from app.services.rag import RAGService
+from app.services.rag_service import RAGService
 
 logger = get_logger(__name__)
+
+
+# =============================================================================
+# MULTILINGUAL CONFIGURATION
+# Common languages in Australia + global support
+# =============================================================================
+
+# Deepgram language codes
+# See: https://developers.deepgram.com/docs/models-languages-overview
+DEEPGRAM_LANGUAGES = {
+    "en": "en-AU",      # English (Australian)
+    "en-au": "en-AU",   # English (Australian)
+    "en-us": "en-US",   # English (US)
+    "en-gb": "en-GB",   # English (UK)
+    "zh": "zh-CN",      # Mandarin Chinese (Simplified)
+    "zh-cn": "zh-CN",   # Mandarin Chinese (Simplified)
+    "zh-tw": "zh-TW",   # Mandarin Chinese (Traditional)
+    "yue": "zh-CN",     # Cantonese (falls back to Mandarin - Deepgram limitation)
+    "vi": "vi",         # Vietnamese
+    "ar": "ar",         # Arabic
+    "el": "el",         # Greek
+    "it": "it",         # Italian
+    "hi": "hi",         # Hindi
+    "tl": "tl",         # Tagalog/Filipino
+    "es": "es",         # Spanish
+    "ko": "ko",         # Korean
+    "ja": "ja",         # Japanese
+    "fr": "fr",         # French
+    "de": "de",         # German
+    "pt": "pt-BR",      # Portuguese (Brazilian)
+    "auto": None,       # Auto-detect (Deepgram will detect)
+}
+
+# ElevenLabs multilingual voices
+# Using eleven_multilingual_v2 model for non-English languages
+ELEVENLABS_VOICES = {
+    # Default/English voices
+    "en": {
+        "voice_id": "21m00Tcm4TlvDq8ikWAM",  # Rachel - natural English
+        "model": "eleven_turbo_v2",
+    },
+    # Multilingual voices (use multilingual model)
+    "zh": {
+        "voice_id": "ThT5KcBeYPX3keUQqHPh",  # Nicole - multilingual
+        "model": "eleven_multilingual_v2",
+    },
+    "yue": {  # Cantonese
+        "voice_id": "ThT5KcBeYPX3keUQqHPh",  # Nicole - multilingual
+        "model": "eleven_multilingual_v2",
+    },
+    "vi": {
+        "voice_id": "ThT5KcBeYPX3keUQqHPh",  # Nicole - multilingual
+        "model": "eleven_multilingual_v2",
+    },
+    "ar": {
+        "voice_id": "ThT5KcBeYPX3keUQqHPh",
+        "model": "eleven_multilingual_v2",
+    },
+    "el": {
+        "voice_id": "ThT5KcBeYPX3keUQqHPh",
+        "model": "eleven_multilingual_v2",
+    },
+    "it": {
+        "voice_id": "ThT5KcBeYPX3keUQqHPh",
+        "model": "eleven_multilingual_v2",
+    },
+    "hi": {
+        "voice_id": "ThT5KcBeYPX3keUQqHPh",
+        "model": "eleven_multilingual_v2",
+    },
+    "tl": {
+        "voice_id": "ThT5KcBeYPX3keUQqHPh",
+        "model": "eleven_multilingual_v2",
+    },
+    "es": {
+        "voice_id": "ThT5KcBeYPX3keUQqHPh",
+        "model": "eleven_multilingual_v2",
+    },
+    "ko": {
+        "voice_id": "ThT5KcBeYPX3keUQqHPh",
+        "model": "eleven_multilingual_v2",
+    },
+    "ja": {
+        "voice_id": "ThT5KcBeYPX3keUQqHPh",
+        "model": "eleven_multilingual_v2",
+    },
+    "fr": {
+        "voice_id": "ThT5KcBeYPX3keUQqHPh",
+        "model": "eleven_multilingual_v2",
+    },
+    "de": {
+        "voice_id": "ThT5KcBeYPX3keUQqHPh",
+        "model": "eleven_multilingual_v2",
+    },
+    "pt": {
+        "voice_id": "ThT5KcBeYPX3keUQqHPh",
+        "model": "eleven_multilingual_v2",
+    },
+}
+
+# Language names for system prompts
+LANGUAGE_NAMES = {
+    "en": "English",
+    "zh": "Mandarin Chinese",
+    "yue": "Cantonese",
+    "vi": "Vietnamese",
+    "ar": "Arabic",
+    "el": "Greek",
+    "it": "Italian",
+    "hi": "Hindi",
+    "tl": "Tagalog",
+    "es": "Spanish",
+    "ko": "Korean",
+    "ja": "Japanese",
+    "fr": "French",
+    "de": "German",
+    "pt": "Portuguese",
+}
 
 
 @dataclass
@@ -41,10 +159,11 @@ class VoiceSessionState:
     is_active: bool = True
     last_user_speech_time: datetime | None = None
     response_count: int = 0
+    detected_language: str | None = None  # For auto-detect mode
 
 
 class VoicePipeline:
-    """Orchestrates the voice AI pipeline for a call session."""
+    """Orchestrates the voice AI pipeline for a call session with multilingual support."""
 
     def __init__(
         self,
@@ -74,12 +193,52 @@ class VoicePipeline:
             room_name=f"call_{call.id}",
         )
 
+        # Language configuration
+        self.language = getattr(self.config, "language", "en") or "en"
+        self.auto_detect = getattr(self.config, "auto_detect_language", False)
+
+    def _get_deepgram_language(self) -> str | None:
+        """Get Deepgram language code for STT."""
+        if self.auto_detect:
+            return None  # Deepgram will auto-detect
+
+        # Use detected language from previous turn if available
+        lang = self.state.detected_language or self.language
+        return DEEPGRAM_LANGUAGES.get(lang, DEEPGRAM_LANGUAGES.get("en"))
+
+    def _get_elevenlabs_config(self) -> dict:
+        """Get ElevenLabs voice and model configuration."""
+        lang = self.state.detected_language or self.language
+
+        # Use custom voice_id if set in tenant config
+        if self.config.voice_id:
+            # For custom voice, determine model based on language
+            is_english = lang.startswith("en")
+            return {
+                "voice_id": self.config.voice_id,
+                "model": "eleven_turbo_v2" if is_english else "eleven_multilingual_v2",
+            }
+
+        # Use default voice for language
+        config = ELEVENLABS_VOICES.get(lang, ELEVENLABS_VOICES["en"])
+        return config
+
     def _build_system_prompt(self, context: str = "") -> str:
-        """Build the system prompt with tenant config and RAG context."""
+        """Build the system prompt with tenant config, RAG context, and language instructions."""
         base_prompt = self.config.system_prompt or (
             "You are a helpful voice assistant. Be concise and conversational. "
             "Keep responses brief (1-2 sentences) unless more detail is needed."
         )
+
+        # Add language instruction for non-English
+        lang = self.state.detected_language or self.language
+        if lang != "en" and not lang.startswith("en"):
+            lang_name = LANGUAGE_NAMES.get(lang, lang)
+            language_instruction = (
+                f"\n\nIMPORTANT: The caller is speaking {lang_name}. "
+                f"You MUST respond in {lang_name}. Be natural and fluent."
+            )
+            base_prompt = base_prompt + language_instruction
 
         if context:
             return f"""{base_prompt}
@@ -93,13 +252,17 @@ Remember to be conversational and concise in your responses."""
         return base_prompt
 
     async def transcribe_audio(self, audio_data: bytes) -> str:
-        """Transcribe audio using Deepgram."""
+        """Transcribe audio using Deepgram with multilingual support."""
         try:
+            deepgram_lang = self._get_deepgram_language()
+
             options = PrerecordedOptions(
                 model="nova-2",
                 smart_format=True,
                 punctuate=True,
                 diarize=False,
+                language=deepgram_lang,
+                detect_language=self.auto_detect,
             )
 
             response = await self.deepgram.listen.asyncrest.v1.transcribe_file(
@@ -107,7 +270,20 @@ Remember to be conversational and concise in your responses."""
                 options,
             )
 
-            transcript = response.results.channels[0].alternatives[0].transcript
+            result = response.results.channels[0]
+            transcript = result.alternatives[0].transcript
+
+            # Store detected language for subsequent responses
+            if self.auto_detect and hasattr(result, "detected_language"):
+                detected = result.detected_language
+                if detected:
+                    self.state.detected_language = detected
+                    logger.info(
+                        "Language detected",
+                        call_id=str(self.call.id),
+                        detected_language=detected,
+                    )
+
             return transcript
 
         except Exception as e:
@@ -115,7 +291,7 @@ Remember to be conversational and concise in your responses."""
             return ""
 
     async def generate_response(self, user_message: str) -> str:
-        """Generate LLM response with RAG context."""
+        """Generate LLM response with RAG context and language awareness."""
         # Get relevant context from RAG
         context = ""
         if self.config.rag_enabled:
@@ -169,17 +345,29 @@ Remember to be conversational and concise in your responses."""
 
         except Exception as e:
             logger.error("LLM response generation failed", error=str(e))
+            # Return error in configured language
+            lang = self.state.detected_language or self.language
+            if lang == "zh":
+                return "对不起，我在处理您的请求时遇到了问题。请您再说一遍好吗？"
+            elif lang == "vi":
+                return "Xin lỗi, tôi gặp khó khăn khi xử lý yêu cầu của bạn. Bạn có thể nhắc lại được không?"
+            elif lang == "ar":
+                return "أنا آسف، أواجه مشكلة في معالجة طلبك. هل يمكنك إعادة ذلك من فضلك؟"
+            elif lang == "es":
+                return "Lo siento, tengo problemas para procesar tu solicitud. ¿Podrías repetirlo?"
             return "I'm sorry, I'm having trouble processing your request. Could you please repeat that?"
 
     async def synthesize_speech(self, text: str) -> AsyncGenerator[bytes, None]:
-        """Synthesize speech using ElevenLabs (streaming)."""
-        voice_id = self.config.voice_id or settings.elevenlabs_voice_id
+        """Synthesize speech using ElevenLabs with multilingual support."""
+        voice_config = self._get_elevenlabs_config()
+        voice_id = voice_config["voice_id"]
+        model = voice_config["model"]
 
         try:
             audio_stream = await self.elevenlabs.generate(
                 text=text,
                 voice=voice_id,
-                model="eleven_turbo_v2",
+                model=model,
                 stream=True,
             )
 
@@ -187,7 +375,12 @@ Remember to be conversational and concise in your responses."""
                 yield chunk
 
         except Exception as e:
-            logger.error("Speech synthesis failed", error=str(e))
+            logger.error(
+                "Speech synthesis failed",
+                error=str(e),
+                voice_id=voice_id,
+                model=model,
+            )
             # Return empty audio or fallback
 
     async def process_speech_turn(self, audio_data: bytes) -> AsyncGenerator[bytes, None]:
@@ -198,10 +391,12 @@ Remember to be conversational and concise in your responses."""
         if not user_text.strip():
             return
 
+        lang = self.state.detected_language or self.language
         logger.info(
             "User speech transcribed",
             call_id=str(self.call.id),
             text=user_text,
+            language=lang,
         )
 
         # Save transcript
@@ -221,6 +416,7 @@ Remember to be conversational and concise in your responses."""
             "Agent response generated",
             call_id=str(self.call.id),
             text=response_text,
+            language=lang,
         )
 
         # Save agent transcript

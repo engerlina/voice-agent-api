@@ -19,6 +19,11 @@ CORS_ORIGINS = [
     "https://voice-agent-dashboard-jade.vercel.app",
     "https://voice-agent-dashboard.vercel.app",
     "http://localhost:3000",
+    "http://localhost:3001",
+    "http://localhost:3002",
+    "http://localhost:3003",
+    "http://localhost:3004",
+    "http://localhost:3005",
 ]
 
 

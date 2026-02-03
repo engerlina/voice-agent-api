@@ -64,8 +64,8 @@ class Settings(BaseSettings):
 
     # AI Services
     openai_api_key: str = ""
-    openai_model: str = "gpt-4-turbo-preview"
-    openai_embedding_model: str = "text-embedding-3-small"
+    openai_model: str = "gpt-4o-mini"
+    openai_embedding_model: str = "text-embedding-3-large"
     anthropic_api_key: str = ""
 
     # LiveKit (Voice Agent)
@@ -81,11 +81,13 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str = ""
     elevenlabs_voice_id: str = "21m00Tcm4TlvDq8ikWAM"
 
-    # Vector Store (RAG)
-    vector_store_type: str = "pgvector"
+    # Vector Store (RAG with Pinecone)
+    vector_store_type: str = "pinecone"
     pinecone_api_key: str | None = None
-    pinecone_environment: str | None = None
-    pinecone_index: str | None = None
+    pinecone_url: str | None = None  # Full Pinecone index URL
+
+    # Web Scraping (Browserless)
+    browserless_api_key: str | None = None
 
     # JWT Settings (for voice agent auth)
     jwt_algorithm: str = "HS256"

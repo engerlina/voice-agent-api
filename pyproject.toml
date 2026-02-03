@@ -53,6 +53,13 @@ dependencies = [
     "langchain-openai>=0.0.5",
     "tiktoken>=0.5.2",
 
+    # Vector Store (Pinecone)
+    "pinecone-client>=3.0.0",
+
+    # File Parsing (for RAG document upload)
+    "pypdf>=4.0.0",
+    "python-docx>=1.1.0",
+
     # Voice (STT/TTS)
     "deepgram-sdk>=3.0.0",
     "elevenlabs>=0.2.0",
