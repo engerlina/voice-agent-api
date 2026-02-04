@@ -1,8 +1,13 @@
 """Call management endpoints for voice agent integration."""
 
+import os
 from datetime import datetime, timezone
 from typing import List, Optional
+from urllib.parse import urlparse
 
+import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select, desc
@@ -15,6 +20,87 @@ from app.models.call_log import CallLog, CallTranscriptLog
 from app.models.user import User
 
 router = APIRouter()
+
+
+# ============== S3 Presigned URL Helper ==============
+
+def get_presigned_url(recording_url: Optional[str], expiration: int = 3600) -> Optional[str]:
+    """
+    Generate a presigned URL for S3 recording access.
+
+    Handles URLs in formats:
+    - https://bucket.s3.region.amazonaws.com/key
+    - https://s3.region.amazonaws.com/bucket/key
+    - s3://bucket/key
+
+    Returns the original URL if not an S3 URL or if presigning fails.
+    """
+    if not recording_url:
+        return None
+
+    # Get AWS credentials
+    access_key = os.getenv("AWS_ACCESS_KEY_ID")
+    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+    region = os.getenv("AWS_REGION", "ap-southeast-2")
+    bucket_name = os.getenv("AWS_S3_BUCKET")
+
+    if not all([access_key, secret_key, bucket_name]):
+        logger.warning("AWS credentials not configured, returning original URL")
+        return recording_url
+
+    try:
+        # Parse the URL to extract bucket and key
+        key = None
+
+        # Handle s3:// protocol
+        if recording_url.startswith("s3://"):
+            parts = recording_url[5:].split("/", 1)
+            if len(parts) == 2:
+                key = parts[1]
+
+        # Handle https:// URLs
+        elif recording_url.startswith("https://"):
+            parsed = urlparse(recording_url)
+
+            # Format: bucket.s3.region.amazonaws.com/key
+            if ".s3." in parsed.netloc and "amazonaws.com" in parsed.netloc:
+                key = parsed.path.lstrip("/")
+
+            # Format: s3.region.amazonaws.com/bucket/key
+            elif parsed.netloc.startswith("s3.") and "amazonaws.com" in parsed.netloc:
+                path_parts = parsed.path.lstrip("/").split("/", 1)
+                if len(path_parts) == 2:
+                    key = path_parts[1]
+
+        if not key:
+            logger.warning(f"Could not parse S3 key from URL: {recording_url}")
+            return recording_url
+
+        # Create S3 client
+        s3_client = boto3.client(
+            "s3",
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name=region,
+            config=Config(signature_version="s3v4"),
+        )
+
+        # Generate presigned URL
+        presigned_url = s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket_name, "Key": key},
+            ExpiresIn=expiration,
+        )
+
+        logger.debug(f"Generated presigned URL for key: {key}")
+        return presigned_url
+
+    except ClientError as e:
+        logger.error(f"Failed to generate presigned URL: {e}")
+        return recording_url
+    except Exception as e:
+        logger.error(f"Unexpected error generating presigned URL: {e}")
+        return recording_url
 
 
 # ============== Schemas ==============
@@ -288,7 +374,7 @@ async def list_user_calls(
             ended_at=call.ended_at,
             duration_seconds=call.duration_seconds,
             agent_response_count=call.agent_response_count or 0,
-            recording_url=call.recording_url,
+            recording_url=get_presigned_url(call.recording_url),
         )
         for call in calls
     ]
@@ -336,7 +422,7 @@ async def get_user_call(
         duration_seconds=call.duration_seconds,
         ended_by=call.ended_by,
         agent_response_count=call.agent_response_count or 0,
-        recording_url=call.recording_url,
+        recording_url=get_presigned_url(call.recording_url),
         transcripts=[
             TranscriptResponse(
                 speaker=t.speaker,
