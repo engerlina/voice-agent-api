@@ -29,6 +29,12 @@ class InvitationCreate(BaseModel):
     role: str = "user"  # "admin" or "user"
 
 
+class InvitedByInfo(BaseModel):
+    id: str
+    email: str
+    full_name: Optional[str] = None
+
+
 class InvitationResponse(BaseModel):
     id: str
     email: str
@@ -36,7 +42,7 @@ class InvitationResponse(BaseModel):
     status: str
     expires_at: datetime
     created_at: datetime
-    invited_by_email: Optional[str] = None
+    invited_by: InvitedByInfo
 
     class Config:
         from_attributes = True
@@ -45,8 +51,10 @@ class InvitationResponse(BaseModel):
 class InvitationValidateResponse(BaseModel):
     valid: bool
     email: Optional[str] = None
-    organization_name: Optional[str] = None
-    message: str
+    tenant_name: Optional[str] = None
+    role: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    invited_by: Optional[str] = None
 
 
 class TeamMemberResponse(BaseModel):
@@ -55,6 +63,7 @@ class TeamMemberResponse(BaseModel):
     full_name: Optional[str]
     role: str
     joined_at: datetime
+    invited_by: Optional[InvitedByInfo] = None
 
     class Config:
         from_attributes = True
@@ -157,7 +166,11 @@ async def create_invitation(
         status=invitation.status.value,
         expires_at=invitation.expires_at,
         created_at=invitation.created_at,
-        invited_by_email=context.user.email,
+        invited_by=InvitedByInfo(
+            id=context.user.id,
+            email=context.user.email,
+            full_name=context.user.full_name,
+        ),
     )
 
 
@@ -186,7 +199,11 @@ async def list_invitations(
             status=inv.status.value,
             expires_at=inv.expires_at,
             created_at=inv.created_at,
-            invited_by_email=inv.invited_by.email if inv.invited_by else None,
+            invited_by=InvitedByInfo(
+                id=inv.invited_by.id if inv.invited_by else "",
+                email=inv.invited_by.email if inv.invited_by else "",
+                full_name=inv.invited_by.full_name if inv.invited_by else None,
+            ),
         )
         for inv in invitations
     ]
@@ -301,38 +318,33 @@ async def validate_invitation(
     """
     result = await db.execute(
         select(Invitation)
-        .options(selectinload(Invitation.tenant))
+        .options(selectinload(Invitation.tenant), selectinload(Invitation.invited_by))
         .where(Invitation.token == token)
     )
     invitation = result.scalar_one_or_none()
 
     if not invitation:
-        return InvitationValidateResponse(
-            valid=False,
-            message="Invalid invitation link",
-        )
+        return InvitationValidateResponse(valid=False)
 
     if invitation.status != InvitationStatus.PENDING:
-        return InvitationValidateResponse(
-            valid=False,
-            message=f"This invitation has been {invitation.status.value}",
-        )
+        return InvitationValidateResponse(valid=False)
 
     # Check expiry
     if datetime.utcnow() > invitation.expires_at.replace(tzinfo=None):
         # Mark as expired
         invitation.status = InvitationStatus.EXPIRED
         await db.commit()
-        return InvitationValidateResponse(
-            valid=False,
-            message="This invitation has expired",
-        )
+        return InvitationValidateResponse(valid=False)
+
+    inviter_name = invitation.invited_by.full_name or invitation.invited_by.email if invitation.invited_by else "Someone"
 
     return InvitationValidateResponse(
         valid=True,
         email=invitation.email,
-        organization_name=invitation.tenant.name,
-        message="Valid invitation",
+        tenant_name=invitation.tenant.name,
+        role=invitation.role.value,
+        expires_at=invitation.expires_at,
+        invited_by=inviter_name,
     )
 
 
@@ -346,7 +358,7 @@ async def list_team_members(
 
     result = await db.execute(
         select(UserTenant)
-        .options(selectinload(UserTenant.user))
+        .options(selectinload(UserTenant.user), selectinload(UserTenant.invited_by))
         .where(UserTenant.tenant_id == context.tenant_id)
         .order_by(UserTenant.joined_at)
     )
@@ -359,6 +371,11 @@ async def list_team_members(
             full_name=m.user.full_name,
             role=m.role.value,
             joined_at=m.joined_at,
+            invited_by=InvitedByInfo(
+                id=m.invited_by.id,
+                email=m.invited_by.email,
+                full_name=m.invited_by.full_name,
+            ) if m.invited_by else None,
         )
         for m in memberships
     ]
