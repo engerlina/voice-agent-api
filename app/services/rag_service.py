@@ -47,8 +47,9 @@ def get_pinecone_index():
 class RAGService:
     """Service for document processing and retrieval using Pinecone."""
 
-    # text-embedding-3-large produces 3072 dimensions
-    EMBEDDING_DIMENSIONS = 3072
+    # Pinecone index is configured for 1024 dimensions
+    # text-embedding-3-large supports dimension reduction via the dimensions parameter
+    EMBEDDING_DIMENSIONS = 1024
 
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
@@ -57,10 +58,14 @@ class RAGService:
         self.index = get_pinecone_index()
 
     async def generate_embedding(self, text: str) -> list[float]:
-        """Generate embedding vector for text using OpenAI text-embedding-3-large."""
+        """Generate embedding vector for text using OpenAI embeddings.
+
+        Uses dimension reduction to 1024 to match Pinecone index configuration.
+        """
         response = await self.openai.embeddings.create(
             model=self.embedding_model,
             input=text,
+            dimensions=self.EMBEDDING_DIMENSIONS,
         )
         return response.data[0].embedding
 
