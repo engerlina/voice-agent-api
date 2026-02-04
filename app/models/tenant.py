@@ -14,7 +14,7 @@ from app.db.base import Base, TimestampMixin
 if TYPE_CHECKING:
     from app.models.call import Call
     from app.models.document import Document
-    from app.models.user import UserTenant
+    from app.models.user_tenant import UserTenant
 
 
 class TenantStatus(str, enum.Enum):

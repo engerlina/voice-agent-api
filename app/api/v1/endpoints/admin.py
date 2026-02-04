@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from twilio.rest import Client as TwilioClient
 from twilio.base.exceptions import TwilioRestException
 
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.deps import get_super_admin_user, get_current_user
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.logging import logger
@@ -31,20 +31,8 @@ def get_twilio_client() -> TwilioClient:
 
 router = APIRouter()
 
-# Admin email(s) - could also be stored in env
-ADMIN_EMAILS = ["jonochan@gmail.com", "jonathan@aineversleeps.net"]
-
-
-async def get_admin_user(
-    current_user: User = Depends(get_current_user),
-) -> User:
-    """Dependency to ensure current user is an admin."""
-    if current_user.email not in ADMIN_EMAILS and not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required",
-        )
-    return current_user
+# Use the centralized dependency for admin access
+get_admin_user = get_super_admin_user
 
 
 # ============== Schemas ==============
