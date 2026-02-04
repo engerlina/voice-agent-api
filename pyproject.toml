@@ -54,7 +54,7 @@ dependencies = [
     "tiktoken>=0.5.2",
 
     # Vector Store (Pinecone)
-    "pinecone-client>=3.0.0",
+    "pinecone>=5.0.0",
 
     # File Parsing (for RAG document upload)
     "pypdf>=4.0.0",
