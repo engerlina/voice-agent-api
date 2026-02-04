@@ -320,6 +320,7 @@ async def create_document(
         document.status = DocumentStatus.FAILED
         document.error_message = str(e)
         await db.commit()
+        await db.refresh(document)
 
     return DocumentResponse(
         id=str(document.id),
@@ -435,6 +436,7 @@ async def upload_document(
         document.status = DocumentStatus.FAILED
         document.error_message = str(e)
         await db.commit()
+        await db.refresh(document)
 
     return DocumentResponse(
         id=str(document.id),
@@ -512,6 +514,7 @@ async def import_url(
         document.status = DocumentStatus.FAILED
         document.error_message = str(e)
         await db.commit()
+        await db.refresh(document)
 
     return DocumentResponse(
         id=str(document.id),
