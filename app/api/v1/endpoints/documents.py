@@ -691,7 +691,7 @@ async def search_documents(
             user_id=current_user.id,
             query=request.query,
             top_k=request.top_k,
-            similarity_threshold=0.5,  # Lower threshold for more results
+            similarity_threshold=0.3,  # Lower threshold to catch more results
         )
 
         return SearchResponse(
