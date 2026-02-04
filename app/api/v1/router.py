@@ -2,12 +2,13 @@
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import admin, auth, calls, checkout, customers, documents, esim, health, orders, phone_numbers, plans, settings, support, voice, webhooks
+from app.api.v1.endpoints import admin, auth, calls, checkout, customers, documents, esim, health, invitations, orders, phone_numbers, plans, settings, support, voice, webhooks
 
 api_router = APIRouter()
 
 # Authentication
 api_router.include_router(auth.router, prefix="/auth", tags=["Authentication"])
+api_router.include_router(invitations.router, prefix="/invitations", tags=["Invitations"])
 
 # Core Trvel eSIM endpoints
 api_router.include_router(health.router, prefix="/health", tags=["Health"])

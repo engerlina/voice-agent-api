@@ -9,9 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.endpoints.auth import get_current_user
 from app.core.database import get_db
-from app.models.global_settings import GlobalSettings, SETTING_ENABLED_MODELS, DEFAULT_MODELS
+from app.models.global_settings import GlobalSettings, SETTING_ENABLED_MODELS
 from app.models.settings import TenantSettings
 from app.models.user import User
+from app.services.models_service import get_all_available_models, merge_with_settings
 
 router = APIRouter()
 
@@ -147,27 +148,24 @@ async def update_settings(
 async def get_available_models(
     db: AsyncSession = Depends(get_db),
 ):
-    """Get list of available AI models (only enabled models)."""
-    # Get enabled models from global settings
+    """Get list of available AI models (only enabled models).
+
+    Fetches models dynamically and filters to only those enabled by admin.
+    """
+    # Fetch available models from providers
+    available_models = await get_all_available_models()
+
+    # Get stored settings (enabled/disabled state)
     result = await db.execute(
         select(GlobalSettings).where(GlobalSettings.key == SETTING_ENABLED_MODELS)
     )
     setting = result.scalar_one_or_none()
+    stored_settings = setting.value if setting else None
 
-    if not setting:
-        # No settings yet, create with defaults (all enabled)
-        setting = GlobalSettings(
-            key=SETTING_ENABLED_MODELS,
-            value=DEFAULT_MODELS,
-            description="Controls which AI models are available to users",
-        )
-        db.add(setting)
-        await db.commit()
-        await db.refresh(setting)
+    # Merge: available models + stored enabled/disabled state
+    models_config = merge_with_settings(available_models, stored_settings)
 
-    models_config = setting.value
-
-    # Filter to only enabled models
+    # Filter to only enabled models (return just the IDs for the user)
     openai_models = [
         m["id"] for m in models_config.get("openai", []) if m.get("enabled", True)
     ]

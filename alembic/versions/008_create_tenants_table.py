@@ -9,7 +9,7 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy import inspect
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, ENUM
 
 # revision identifiers, used by Alembic.
 revision: str = '008'
@@ -26,61 +26,66 @@ def table_exists(table_name: str) -> bool:
 
 
 def upgrade() -> None:
-    # Create tenant_status enum
-    tenant_status_enum = sa.Enum(
-        'active', 'suspended', 'trial', 'cancelled',
-        name='tenant_status_enum'
-    )
-
+    # Create tenants table using raw SQL to avoid SQLAlchemy enum issues
     if not table_exists('tenants'):
-        tenant_status_enum.create(op.get_bind(), checkfirst=True)
+        # Create enum type (ignore if exists)
+        op.execute("""
+            DO $$ BEGIN
+                CREATE TYPE tenant_status_enum AS ENUM ('active', 'suspended', 'trial', 'cancelled');
+            EXCEPTION
+                WHEN duplicate_object THEN null;
+            END $$
+        """)
 
-        op.create_table(
-            'tenants',
-            sa.Column('id', UUID(as_uuid=True), primary_key=True),
-            sa.Column('name', sa.String(255), nullable=False),
-            sa.Column('slug', sa.String(100), unique=True, nullable=False, index=True),
-            sa.Column('status', tenant_status_enum, nullable=False, server_default='trial'),
-            sa.Column('email', sa.String(255), nullable=False),
-            sa.Column('phone', sa.String(50), nullable=True),
-            sa.Column('website', sa.String(255), nullable=True),
-            sa.Column('twilio_phone_number', sa.String(50), nullable=True),
-            sa.Column('sip_trunk_uri', sa.String(255), nullable=True),
-            sa.Column('is_active', sa.Boolean, nullable=False, server_default='true'),
-            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        )
+        # Create tenants table
+        op.execute("""
+            CREATE TABLE tenants (
+                id UUID PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                slug VARCHAR(100) UNIQUE NOT NULL,
+                status tenant_status_enum NOT NULL DEFAULT 'trial',
+                email VARCHAR(255) NOT NULL,
+                phone VARCHAR(50),
+                website VARCHAR(255),
+                twilio_phone_number VARCHAR(50),
+                sip_trunk_uri VARCHAR(255),
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            )
+        """)
+
+        # Create index separately
+        op.execute("CREATE INDEX ix_tenants_slug ON tenants(slug)")
 
     if not table_exists('tenant_configs'):
-        op.create_table(
-            'tenant_configs',
-            sa.Column('id', UUID(as_uuid=True), primary_key=True),
-            sa.Column('tenant_id', UUID(as_uuid=True), sa.ForeignKey('tenants.id', ondelete='CASCADE'), unique=True, nullable=False),
-            sa.Column('business_hours', sa.JSON, nullable=True),
-            sa.Column('timezone', sa.String(50), server_default='America/New_York', nullable=False),
-            sa.Column('system_prompt', sa.Text, nullable=True),
-            sa.Column('greeting_message', sa.Text, server_default="Hello! Thank you for calling. How can I help you today?", nullable=False),
-            sa.Column('voice_id', sa.String(100), nullable=True),
-            sa.Column('llm_model', sa.String(100), server_default='gpt-4o-mini', nullable=False),
-            sa.Column('temperature', sa.Float, server_default='0.7', nullable=False),
-            sa.Column('language', sa.String(10), server_default='en', nullable=False),
-            sa.Column('auto_detect_language', sa.Boolean, server_default='false', nullable=False),
-            sa.Column('transfer_number', sa.String(50), nullable=True),
-            sa.Column('voicemail_enabled', sa.Boolean, server_default='true', nullable=False),
-            sa.Column('max_call_duration_seconds', sa.Integer, server_default='1800', nullable=False),
-            sa.Column('rag_enabled', sa.Boolean, server_default='true', nullable=False),
-            sa.Column('rag_top_k', sa.Integer, server_default='5', nullable=False),
-            sa.Column('rag_similarity_threshold', sa.Float, server_default='0.7', nullable=False),
-            sa.Column('metadata', sa.JSON, nullable=True),
-            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        )
+        op.execute("""
+            CREATE TABLE tenant_configs (
+                id UUID PRIMARY KEY,
+                tenant_id UUID UNIQUE NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                business_hours JSONB,
+                timezone VARCHAR(50) NOT NULL DEFAULT 'America/New_York',
+                system_prompt TEXT,
+                greeting_message TEXT NOT NULL DEFAULT 'Hello! Thank you for calling. How can I help you today?',
+                voice_id VARCHAR(100),
+                llm_model VARCHAR(100) NOT NULL DEFAULT 'gpt-4o-mini',
+                temperature FLOAT NOT NULL DEFAULT 0.7,
+                language VARCHAR(10) NOT NULL DEFAULT 'en',
+                auto_detect_language BOOLEAN NOT NULL DEFAULT FALSE,
+                transfer_number VARCHAR(50),
+                voicemail_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                max_call_duration_seconds INTEGER NOT NULL DEFAULT 1800,
+                rag_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                rag_top_k INTEGER NOT NULL DEFAULT 5,
+                rag_similarity_threshold FLOAT NOT NULL DEFAULT 0.7,
+                metadata JSONB,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            )
+        """)
 
 
 def downgrade() -> None:
-    if table_exists('tenant_configs'):
-        op.drop_table('tenant_configs')
-    if table_exists('tenants'):
-        op.drop_table('tenants')
-    # Drop enum type
+    op.execute("DROP TABLE IF EXISTS tenant_configs")
+    op.execute("DROP TABLE IF EXISTS tenants")
     op.execute("DROP TYPE IF EXISTS tenant_status_enum")

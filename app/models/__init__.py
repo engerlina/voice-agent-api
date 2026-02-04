@@ -3,6 +3,7 @@
 from app.models.call_log import CallLog, CallTranscriptLog
 from app.models.customer import Customer
 from app.models.global_settings import GlobalSettings, SETTING_ENABLED_MODELS, DEFAULT_MODELS
+from app.models.invitation import Invitation, InvitationStatus
 from app.models.order import Order, OrderStatus, EsimStatus
 from app.models.phone_number import PhoneNumber
 from app.models.plan import Plan
@@ -17,6 +18,8 @@ __all__ = [
     "Customer",
     "DEFAULT_MODELS",
     "GlobalSettings",
+    "Invitation",
+    "InvitationStatus",
     "Order",
     "OrderStatus",
     "EsimStatus",

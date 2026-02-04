@@ -601,3 +601,115 @@ class DeliveryService:
             "success": True,
             "message_id": data.get("id"),
         }
+
+    @retry(
+        stop=stop_after_attempt(2),
+        wait=wait_exponential(multiplier=1, min=1, max=5),
+    )
+    async def send_invitation_email(
+        self,
+        email: str,
+        organization_name: str,
+        inviter_name: str,
+        role: str,
+        invite_token: str,
+    ) -> dict:
+        """Send team invitation email with magic link."""
+        # Build the signup URL with invite token
+        base_url = getattr(settings, 'frontend_url', "https://voxxcalls.com")
+        invite_url = f"{base_url}/signup?invite={invite_token}"
+        logo_url = "https://www.voxxcalls.com/android-chrome-192x192.png"
+        role_display = "an administrator" if role == "admin" else "a team member"
+
+        html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body style="font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #1a1a2e; margin: 0; padding: 0; background-color: #f8fafc;">
+  <div style="max-width: 600px; margin: 0 auto; padding: 24px 20px;">
+
+    <!-- Header with Logo -->
+    <div style="text-align: center; margin-bottom: 20px;">
+      <img src="{logo_url}" alt="VoxxCalls" width="48" height="48" style="border-radius: 12px; margin-bottom: 8px;">
+      <h1 style="color: #6366f1; font-size: 28px; margin: 0; font-weight: 700;">VoxxCalls</h1>
+    </div>
+
+    <!-- Main Card -->
+    <div style="background: white; border-radius: 24px; padding: 40px 32px; box-shadow: 0 4px 24px rgba(99, 102, 241, 0.1);">
+
+      <!-- Invitation Banner -->
+      <div style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); border-radius: 16px; padding: 24px; margin-bottom: 32px; text-align: center;">
+        <p style="color: white; font-size: 20px; font-weight: 600; margin: 0 0 8px;">You're Invited!</p>
+        <p style="color: rgba(255,255,255,0.9); margin: 0; font-size: 15px;">Join {organization_name} on VoxxCalls</p>
+      </div>
+
+      <!-- Message -->
+      <p style="font-size: 16px; color: #1a1a2e; margin: 0 0 24px;">
+        <strong>{inviter_name}</strong> has invited you to join <strong>{organization_name}</strong> as {role_display}.
+      </p>
+
+      <p style="font-size: 15px; color: #64748b; margin: 0 0 32px;">
+        VoxxCalls helps teams manage AI-powered voice agents. Click the button below to create your account and get started.
+      </p>
+
+      <!-- CTA Button -->
+      <div style="text-align: center; margin-bottom: 32px;">
+        <a href="{invite_url}" style="display: inline-block; background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); color: white; text-decoration: none; padding: 16px 32px; border-radius: 12px; font-weight: 600; font-size: 16px;">
+          Accept Invitation
+        </a>
+      </div>
+
+      <!-- Link fallback -->
+      <div style="background: #f8fafc; border-radius: 12px; padding: 16px; margin-bottom: 24px;">
+        <p style="margin: 0 0 8px; color: #64748b; font-size: 13px;">Or copy and paste this link:</p>
+        <p style="margin: 0; color: #6366f1; font-size: 13px; word-break: break-all;">{invite_url}</p>
+      </div>
+
+      <!-- Expiry notice -->
+      <p style="color: #94a3b8; font-size: 13px; margin: 0; text-align: center;">
+        This invitation expires in 7 days.
+      </p>
+    </div>
+
+    <!-- Footer -->
+    <div style="text-align: center; margin-top: 40px; padding-top: 24px; border-top: 1px solid #e2e8f0;">
+      <p style="color: #94a3b8; font-size: 12px; margin: 0;">
+        VoxxCalls - AI Voice Agents<br>
+        <a href="https://voxxcalls.com" style="color: #6366f1; text-decoration: none;">voxxcalls.com</a>
+      </p>
+    </div>
+  </div>
+</body>
+</html>"""
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {self.resend_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": f"VoxxCalls <{self.from_email}>",
+                    "to": [email],
+                    "subject": f"You're invited to join {organization_name} on VoxxCalls",
+                    "html": html_content,
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        logger.info(
+            "invitation_email_sent",
+            email=email,
+            organization=organization_name,
+            message_id=data.get("id"),
+        )
+
+        return {
+            "success": True,
+            "message_id": data.get("id"),
+        }

@@ -18,6 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.models.invitation import Invitation, InvitationStatus
 from app.models.tenant import Tenant, TenantConfig, TenantStatus
 from app.models.user import User
 from app.models.user_tenant import UserTenant, UserRole
@@ -44,11 +45,14 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str
     full_name: Optional[str] = None
-    organization_name: str  # Required - creates a tenant
+    organization_name: Optional[str] = None  # Required unless invite_token provided
+    invite_token: Optional[str] = None  # Token from invitation link
 
     @field_validator('organization_name')
     @classmethod
-    def validate_organization_name(cls, v: str) -> str:
+    def validate_organization_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
         v = v.strip()
         if len(v) < 2:
             raise ValueError('Organization name must be at least 2 characters')
@@ -159,7 +163,11 @@ async def get_current_user(
 # Endpoints
 @router.post("/signup", response_model=Token)
 async def signup(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
-    """Register a new user and create their organization."""
+    """Register a new user.
+
+    If invite_token is provided, user joins an existing organization.
+    Otherwise, a new organization is created.
+    """
     # Check if user exists
     result = await db.execute(select(User).where(User.email == user_data.email))
     if result.scalar_one_or_none():
@@ -168,43 +176,101 @@ async def signup(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
             detail="Email already registered",
         )
 
+    invitation = None
+
+    # Handle invited signup
+    if user_data.invite_token:
+        # Validate invitation
+        result = await db.execute(
+            select(Invitation)
+            .where(Invitation.token == user_data.invite_token)
+        )
+        invitation = result.scalar_one_or_none()
+
+        if not invitation:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid invitation token",
+            )
+
+        if invitation.status != InvitationStatus.PENDING:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invitation has already been used or revoked",
+            )
+
+        if not invitation.is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invitation has expired",
+            )
+
+        # Email must match invitation
+        if user_data.email.lower() != invitation.email.lower():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email does not match invitation",
+            )
+    else:
+        # Normal signup requires organization_name
+        if not user_data.organization_name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Organization name is required",
+            )
+
     # Create user
     user = User(
         email=user_data.email,
         full_name=user_data.full_name,
         hashed_password=get_password_hash(user_data.password),
-        tenant_name=user_data.organization_name,  # Keep for backwards compat
+        tenant_name=user_data.organization_name or "",  # Keep for backwards compat
     )
     db.add(user)
     await db.flush()  # Get user.id without committing
 
-    # Create tenant (organization)
-    tenant = Tenant(
-        id=uuid.uuid4(),
-        name=user_data.organization_name,
-        slug=generate_slug(user_data.organization_name),
-        email=user_data.email,
-        status=TenantStatus.TRIAL,
-        is_active=True,
-    )
-    db.add(tenant)
-    await db.flush()  # Get tenant.id
+    if invitation:
+        # Invited signup: join existing tenant with invitation's role
+        user_tenant = UserTenant(
+            user_id=user.id,
+            tenant_id=invitation.tenant_id,
+            role=invitation.role,
+            is_primary=True,
+            invited_by_id=invitation.invited_by_id,
+        )
+        db.add(user_tenant)
 
-    # Create default tenant config
-    tenant_config = TenantConfig(
-        id=uuid.uuid4(),
-        tenant_id=tenant.id,
-    )
-    db.add(tenant_config)
+        # Mark invitation as accepted
+        invitation.status = InvitationStatus.ACCEPTED
+        invitation.accepted_at = datetime.utcnow()
+    else:
+        # Normal signup: create new tenant
+        tenant = Tenant(
+            id=uuid.uuid4(),
+            name=user_data.organization_name,
+            slug=generate_slug(user_data.organization_name),
+            email=user_data.email,
+            status=TenantStatus.TRIAL,
+            is_active=True,
+        )
+        db.add(tenant)
+        await db.flush()  # Get tenant.id
 
-    # Link user to tenant as admin
-    user_tenant = UserTenant(
-        user_id=user.id,
-        tenant_id=tenant.id,
-        role=UserRole.ADMIN,
-        is_primary=True,
-    )
-    db.add(user_tenant)
+        # Create default tenant config
+        tenant_config = TenantConfig(
+            id=uuid.uuid4(),
+            tenant_id=tenant.id,
+        )
+        db.add(tenant_config)
+
+        # Link user to tenant as admin
+        user_tenant = UserTenant(
+            user_id=user.id,
+            tenant_id=tenant.id,
+            role=UserRole.ADMIN,
+            is_primary=True,
+        )
+        db.add(user_tenant)
 
     await db.commit()
     await db.refresh(user)

@@ -9,7 +9,6 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy import inspect
-from sqlalchemy.dialects.postgresql import UUID
 
 # revision identifiers, used by Alembic.
 revision: str = '009'
@@ -26,39 +25,38 @@ def table_exists(table_name: str) -> bool:
 
 
 def upgrade() -> None:
-    # Create user_role enum
-    user_role_enum = sa.Enum(
-        'super_admin', 'admin', 'user',
-        name='user_role_enum'
-    )
-
+    # Create user_tenants table using raw SQL to avoid SQLAlchemy enum issues
     if not table_exists('user_tenants'):
-        user_role_enum.create(op.get_bind(), checkfirst=True)
+        # Create enum type (ignore if exists)
+        op.execute("""
+            DO $$ BEGIN
+                CREATE TYPE user_role_enum AS ENUM ('super_admin', 'admin', 'user');
+            EXCEPTION
+                WHEN duplicate_object THEN null;
+            END $$
+        """)
 
-        op.create_table(
-            'user_tenants',
-            sa.Column('id', UUID(as_uuid=True), primary_key=True),
-            # User FK - String(36) to match users.id
-            sa.Column('user_id', sa.String(36), sa.ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True),
-            # Tenant FK - UUID to match tenants.id
-            sa.Column('tenant_id', UUID(as_uuid=True), sa.ForeignKey('tenants.id', ondelete='CASCADE'), nullable=False, index=True),
-            # Role within this tenant
-            sa.Column('role', user_role_enum, nullable=False, server_default='user'),
-            # Is this the user's primary/default tenant?
-            sa.Column('is_primary', sa.Boolean, nullable=False, server_default='false'),
-            # Who invited this user (nullable for self-created tenants)
-            sa.Column('invited_by_id', sa.String(36), sa.ForeignKey('users.id', ondelete='SET NULL'), nullable=True),
-            # Timestamps
-            sa.Column('joined_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-            # Unique constraint: one membership per user per tenant
-            sa.UniqueConstraint('user_id', 'tenant_id', name='uq_user_tenant'),
-        )
+        # Create user_tenants table
+        op.execute("""
+            CREATE TABLE user_tenants (
+                id UUID PRIMARY KEY,
+                user_id VARCHAR(36) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                role user_role_enum NOT NULL DEFAULT 'user',
+                is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+                invited_by_id VARCHAR(36) REFERENCES users(id) ON DELETE SET NULL,
+                joined_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                UNIQUE(user_id, tenant_id)
+            )
+        """)
+
+        # Create indexes separately
+        op.execute("CREATE INDEX ix_user_tenants_user_id ON user_tenants(user_id)")
+        op.execute("CREATE INDEX ix_user_tenants_tenant_id ON user_tenants(tenant_id)")
 
 
 def downgrade() -> None:
-    if table_exists('user_tenants'):
-        op.drop_table('user_tenants')
-    # Drop enum type
+    op.execute("DROP TABLE IF EXISTS user_tenants")
     op.execute("DROP TYPE IF EXISTS user_role_enum")

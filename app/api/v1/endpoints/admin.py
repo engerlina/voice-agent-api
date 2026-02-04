@@ -14,10 +14,11 @@ from app.api.deps import get_super_admin_user, get_current_user
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.logging import logger
-from app.models.global_settings import GlobalSettings, SETTING_ENABLED_MODELS, DEFAULT_MODELS
+from app.models.global_settings import GlobalSettings, SETTING_ENABLED_MODELS
 from app.models.phone_number import PhoneNumber
 from app.models.settings import TenantSettings
 from app.models.user import User
+from app.services.models_service import get_all_available_models, merge_with_settings
 
 
 def get_twilio_client() -> TwilioClient:
@@ -609,25 +610,33 @@ class ToggleModelRequest(BaseModel):
     enabled: bool
 
 
-async def get_enabled_models_setting(db: AsyncSession) -> dict:
-    """Get the enabled models setting from the database, or create default."""
+async def get_stored_models_setting(db: AsyncSession) -> Optional[dict]:
+    """Get the stored models setting from the database (may be None)."""
+    result = await db.execute(
+        select(GlobalSettings).where(GlobalSettings.key == SETTING_ENABLED_MODELS)
+    )
+    setting = result.scalar_one_or_none()
+    return setting.value if setting else None
+
+
+async def save_models_setting(db: AsyncSession, models_config: dict) -> None:
+    """Save the models configuration to the database."""
     result = await db.execute(
         select(GlobalSettings).where(GlobalSettings.key == SETTING_ENABLED_MODELS)
     )
     setting = result.scalar_one_or_none()
 
-    if not setting:
-        # Create default setting with all models enabled
+    if setting:
+        setting.value = models_config
+    else:
         setting = GlobalSettings(
             key=SETTING_ENABLED_MODELS,
-            value=DEFAULT_MODELS,
+            value=models_config,
             description="Controls which AI models are available to users",
         )
         db.add(setting)
-        await db.commit()
-        await db.refresh(setting)
 
-    return setting.value
+    await db.commit()
 
 
 @router.get("/models", response_model=ModelsResponse)
@@ -635,11 +644,25 @@ async def list_all_models(
     admin: User = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all AI models with their enabled status (admin only)."""
-    models_config = await get_enabled_models_setting(db)
+    """List all AI models with their enabled status (admin only).
+
+    Fetches models dynamically from OpenAI API and maintains a list for Anthropic.
+    New models default to enabled.
+    """
+    # Fetch available models from providers
+    available_models = await get_all_available_models()
+
+    # Get stored settings (enabled/disabled state)
+    stored_settings = await get_stored_models_setting(db)
+
+    # Merge: available models + stored enabled/disabled state
+    merged_models = merge_with_settings(available_models, stored_settings)
+
+    # Save the merged config (to persist new models)
+    await save_models_setting(db, merged_models)
 
     providers = []
-    for provider, models in models_config.items():
+    for provider, models in merged_models.items():
         providers.append(ProviderModels(
             provider=provider,
             models=[ModelInfo(id=m["id"], name=m["name"], enabled=m["enabled"]) for m in models]
@@ -657,20 +680,10 @@ async def toggle_model(
     db: AsyncSession = Depends(get_db),
 ):
     """Toggle a model's enabled status (admin only)."""
-    result = await db.execute(
-        select(GlobalSettings).where(GlobalSettings.key == SETTING_ENABLED_MODELS)
-    )
-    setting = result.scalar_one_or_none()
-
-    if not setting:
-        # Create with defaults first
-        await get_enabled_models_setting(db)
-        result = await db.execute(
-            select(GlobalSettings).where(GlobalSettings.key == SETTING_ENABLED_MODELS)
-        )
-        setting = result.scalar_one_or_none()
-
-    models_config = setting.value
+    # Fetch current available models and merge with stored settings
+    available_models = await get_all_available_models()
+    stored_settings = await get_stored_models_setting(db)
+    models_config = merge_with_settings(available_models, stored_settings)
 
     # Validate provider exists
     if provider not in models_config:
@@ -687,9 +700,8 @@ async def toggle_model(
     if not model_found:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in provider '{provider}'")
 
-    # Update the setting
-    setting.value = models_config
-    await db.commit()
+    # Save the updated setting
+    await save_models_setting(db, models_config)
 
     logger.info(
         "model_toggled",
