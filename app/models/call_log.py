@@ -46,6 +46,10 @@ class CallLog(Base):
     ended_by: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     agent_response_count: Mapped[int] = mapped_column(Integer, default=0)
 
+    # Recording
+    egress_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    recording_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow, nullable=False

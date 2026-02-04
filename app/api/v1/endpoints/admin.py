@@ -14,6 +14,7 @@ from app.api.v1.endpoints.auth import get_current_user
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.logging import logger
+from app.models.global_settings import GlobalSettings, SETTING_ENABLED_MODELS, DEFAULT_MODELS
 from app.models.phone_number import PhoneNumber
 from app.models.settings import TenantSettings
 from app.models.user import User
@@ -597,3 +598,117 @@ async def buy_phone_number(
     except TwilioRestException as e:
         logger.error("twilio_purchase_error", error=str(e))
         raise HTTPException(status_code=400, detail=f"Twilio error: {e.msg}")
+
+
+# ============== Model Management ==============
+
+class ModelInfo(BaseModel):
+    id: str
+    name: str
+    enabled: bool
+
+
+class ProviderModels(BaseModel):
+    provider: str
+    models: list[ModelInfo]
+
+
+class ModelsResponse(BaseModel):
+    providers: list[ProviderModels]
+
+
+class ToggleModelRequest(BaseModel):
+    enabled: bool
+
+
+async def get_enabled_models_setting(db: AsyncSession) -> dict:
+    """Get the enabled models setting from the database, or create default."""
+    result = await db.execute(
+        select(GlobalSettings).where(GlobalSettings.key == SETTING_ENABLED_MODELS)
+    )
+    setting = result.scalar_one_or_none()
+
+    if not setting:
+        # Create default setting with all models enabled
+        setting = GlobalSettings(
+            key=SETTING_ENABLED_MODELS,
+            value=DEFAULT_MODELS,
+            description="Controls which AI models are available to users",
+        )
+        db.add(setting)
+        await db.commit()
+        await db.refresh(setting)
+
+    return setting.value
+
+
+@router.get("/models", response_model=ModelsResponse)
+async def list_all_models(
+    admin: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all AI models with their enabled status (admin only)."""
+    models_config = await get_enabled_models_setting(db)
+
+    providers = []
+    for provider, models in models_config.items():
+        providers.append(ProviderModels(
+            provider=provider,
+            models=[ModelInfo(id=m["id"], name=m["name"], enabled=m["enabled"]) for m in models]
+        ))
+
+    return ModelsResponse(providers=providers)
+
+
+@router.put("/models/{provider}/{model_id}/toggle")
+async def toggle_model(
+    provider: str,
+    model_id: str,
+    request: ToggleModelRequest,
+    admin: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Toggle a model's enabled status (admin only)."""
+    result = await db.execute(
+        select(GlobalSettings).where(GlobalSettings.key == SETTING_ENABLED_MODELS)
+    )
+    setting = result.scalar_one_or_none()
+
+    if not setting:
+        # Create with defaults first
+        await get_enabled_models_setting(db)
+        result = await db.execute(
+            select(GlobalSettings).where(GlobalSettings.key == SETTING_ENABLED_MODELS)
+        )
+        setting = result.scalar_one_or_none()
+
+    models_config = setting.value
+
+    # Validate provider exists
+    if provider not in models_config:
+        raise HTTPException(status_code=404, detail=f"Provider '{provider}' not found")
+
+    # Find and update the model
+    model_found = False
+    for model in models_config[provider]:
+        if model["id"] == model_id:
+            model["enabled"] = request.enabled
+            model_found = True
+            break
+
+    if not model_found:
+        raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in provider '{provider}'")
+
+    # Update the setting
+    setting.value = models_config
+    await db.commit()
+
+    logger.info(
+        "model_toggled",
+        provider=provider,
+        model_id=model_id,
+        enabled=request.enabled,
+        admin=admin.email,
+    )
+
+    return {"message": f"Model '{model_id}' {'enabled' if request.enabled else 'disabled'}"}

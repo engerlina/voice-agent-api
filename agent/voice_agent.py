@@ -2,7 +2,8 @@
 
 This agent fetches tenant-specific settings from the API to customize
 the voice, LLM model, and behavior per user. It also records transcripts
-of conversations when call_recording_enabled is set.
+of conversations when call_recording_enabled is set, and can record
+audio to S3 using LiveKit Egress.
 """
 
 import asyncio
@@ -15,6 +16,7 @@ from typing import Optional
 import httpx
 from dotenv import load_dotenv
 
+from livekit import api
 from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, cli
 from livekit.agents.voice import Agent, AgentSession
 from livekit.plugins import deepgram, openai, silero, elevenlabs
@@ -26,7 +28,7 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 
 
 class CallRecorder:
-    """Handles call recording and transcript storage."""
+    """Handles call recording, transcript storage, and audio egress."""
 
     def __init__(self, api_base_url: str):
         self.api_base_url = api_base_url
@@ -34,6 +36,8 @@ class CallRecorder:
         self.transcripts: list[dict] = []
         self.call_start_time: float = 0
         self.agent_response_count: int = 0
+        self.egress_id: Optional[str] = None
+        self.lkapi: Optional[api.LiveKitAPI] = None
 
     async def create_call(
         self,
@@ -67,6 +71,89 @@ class CallRecorder:
         except Exception as e:
             print(f"Error creating call record: {e}")
         return None
+
+    async def start_audio_recording(self, room_name: str) -> Optional[str]:
+        """Start LiveKit Egress to record audio to S3."""
+        # Check if S3 is configured
+        bucket = os.getenv("AWS_S3_BUCKET")
+        region = os.getenv("AWS_REGION")
+        access_key = os.getenv("AWS_ACCESS_KEY_ID")
+        secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+
+        if not all([bucket, region, access_key, secret_key]):
+            print("S3 not configured, skipping audio recording")
+            return None
+
+        try:
+            # Initialize LiveKit API client
+            self.lkapi = api.LiveKitAPI(
+                url=os.getenv("LIVEKIT_URL"),
+                api_key=os.getenv("LIVEKIT_API_KEY"),
+                api_secret=os.getenv("LIVEKIT_API_SECRET"),
+            )
+
+            # Generate a unique filepath for the recording
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            filepath = f"recordings/{room_name}_{timestamp}.ogg"
+
+            # Create room composite egress request (audio only)
+            req = api.RoomCompositeEgressRequest(
+                room_name=room_name,
+                audio_only=True,
+                file_outputs=[
+                    api.EncodedFileOutput(
+                        file_type=api.EncodedFileType.OGG,
+                        filepath=filepath,
+                        s3=api.S3Upload(
+                            bucket=bucket,
+                            region=region,
+                            access_key=access_key,
+                            secret=secret_key,
+                        ),
+                    )
+                ],
+            )
+
+            # Start the egress
+            result = await self.lkapi.egress.start_room_composite_egress(req)
+            self.egress_id = result.egress_id
+            print(f"Audio recording started: egress_id={self.egress_id}, filepath={filepath}")
+            return self.egress_id
+
+        except Exception as e:
+            print(f"Error starting audio recording: {e}")
+            return None
+
+    async def stop_audio_recording(self) -> Optional[str]:
+        """Stop LiveKit Egress and return the recording URL."""
+        if not self.egress_id or not self.lkapi:
+            return None
+
+        try:
+            # Stop the egress
+            result = await self.lkapi.egress.stop_egress(api.StopEgressRequest(
+                egress_id=self.egress_id
+            ))
+
+            # Get the recording URL from the result
+            recording_url = None
+            if result.file_results:
+                for file_result in result.file_results:
+                    if file_result.location:
+                        recording_url = file_result.location
+                        break
+
+            print(f"Audio recording stopped: {recording_url}")
+            return recording_url
+
+        except Exception as e:
+            print(f"Error stopping audio recording: {e}")
+            return None
+        finally:
+            # Clean up the API client
+            if self.lkapi:
+                await self.lkapi.aclose()
+                self.lkapi = None
 
     def add_transcript(self, speaker: str, text: str, confidence: Optional[float] = None):
         """Add a transcript entry."""
@@ -119,23 +206,34 @@ class CallRecorder:
         # Save any remaining transcripts
         await self.save_transcripts()
 
+        # Stop audio recording and get the URL
+        recording_url = await self.stop_audio_recording()
+
         duration = int(time.time() - self.call_start_time) if self.call_start_time else 0
 
         try:
+            update_data = {
+                "status": "completed",
+                "ended_at": datetime.now(timezone.utc).isoformat(),
+                "duration_seconds": duration,
+                "ended_by": ended_by,
+                "agent_response_count": self.agent_response_count,
+            }
+
+            # Include recording URL if available
+            if recording_url:
+                update_data["recording_url"] = recording_url
+            if self.egress_id:
+                update_data["egress_id"] = self.egress_id
+
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{self.api_base_url}/api/v1/calls/internal/{self.call_id}/update",
-                    json={
-                        "status": "completed",
-                        "ended_at": datetime.now(timezone.utc).isoformat(),
-                        "duration_seconds": duration,
-                        "ended_by": ended_by,
-                        "agent_response_count": self.agent_response_count,
-                    },
-                    timeout=5.0,
+                    json=update_data,
+                    timeout=10.0,  # Increased timeout for egress stop
                 )
                 if response.status_code == 200:
-                    print(f"Call ended: {self.call_id}, duration: {duration}s")
+                    print(f"Call ended: {self.call_id}, duration: {duration}s, recording: {recording_url}")
                     return True
         except Exception as e:
             print(f"Error ending call: {e}")
@@ -300,6 +398,9 @@ async def entrypoint(ctx: JobContext):
 
     # Use tenant settings or defaults
     call_recording_enabled = False
+    language = "en"
+    auto_detect_language = False
+    min_silence_duration = 0.4  # Default: faster response time
     if settings:
         # Update user_id from settings if not already set (e.g., when fetched by phone number)
         if not user_id:
@@ -310,6 +411,9 @@ async def entrypoint(ctx: JobContext):
         voice_id = settings.get("elevenlabs_voice_id", "21m00Tcm4TlvDq8ikWAM")
         llm_model = settings.get("llm_model", "gpt-4o-mini")
         call_recording_enabled = settings.get("call_recording_enabled", False)
+        language = settings.get("language", "en")
+        auto_detect_language = settings.get("auto_detect_language", False)
+        min_silence_duration = settings.get("min_silence_duration", 0.4)
     else:
         print("Using default settings (no tenant settings found)")
         instructions = get_default_instructions()
@@ -320,6 +424,8 @@ async def entrypoint(ctx: JobContext):
     print(f"LLM Model: {llm_model}")
     print(f"Voice ID: {voice_id}")
     print(f"Call Recording: {'enabled' if call_recording_enabled else 'disabled'}")
+    print(f"Language: {language}, Auto-detect: {auto_detect_language}")
+    print(f"Response speed (min_silence_duration): {min_silence_duration}s")
 
     # Initialize call recorder
     recorder = CallRecorder(API_BASE_URL)
@@ -333,16 +439,77 @@ async def entrypoint(ctx: JobContext):
             callee_number=called_number,
             user_id=user_id,
         )
+        # Start audio recording to S3
+        await recorder.start_audio_recording(ctx.room.name)
 
     # Create the agent with tenant-specific instructions
+    # Add language instruction to system prompt based on settings
+    if auto_detect_language:
+        # When auto-detect is enabled, instruct LLM to detect and mirror the caller's language
+        instructions = instructions + """
+
+IMPORTANT LANGUAGE INSTRUCTION: You are in multilingual mode.
+- Listen carefully to what language the caller is speaking
+- ALWAYS respond in the SAME language that the caller uses
+- If they speak Mandarin Chinese, respond in Mandarin Chinese
+- If they speak Spanish, respond in Spanish
+- If they speak any other language, respond in that language
+- If you're unsure, continue in the language of their most recent message
+- Be natural and fluent in your responses"""
+    elif language != "en" and not language.startswith("en"):
+        # Specific language configured (not English)
+        language_names = {
+            "zh": "Mandarin Chinese", "yue": "Cantonese", "vi": "Vietnamese",
+            "ar": "Arabic", "el": "Greek", "it": "Italian", "hi": "Hindi",
+            "tl": "Tagalog", "es": "Spanish", "ko": "Korean", "ja": "Japanese",
+            "fr": "French", "de": "German", "pt": "Portuguese",
+        }
+        lang_name = language_names.get(language, language)
+        instructions = instructions + f"\n\nIMPORTANT: The caller is speaking {lang_name}. You MUST respond in {lang_name}. Be natural and fluent."
+
     agent = Agent(instructions=instructions)
+
+    # Configure STT based on language settings
+    # Use nova-3 with language="multi" for auto-detection, or specific language otherwise
+    if auto_detect_language:
+        # Multilingual mode: Deepgram nova-3 with language="multi"
+        stt_config = deepgram.STT(model="nova-3", language="multi")
+        print("STT: Deepgram nova-3 multilingual mode (auto-detect)")
+    else:
+        # Map language code to Deepgram language format
+        deepgram_languages = {
+            "en": "en-AU", "en-au": "en-AU", "en-us": "en-US", "en-gb": "en-GB",
+            "zh": "zh-CN", "zh-cn": "zh-CN", "zh-tw": "zh-TW", "yue": "zh-CN",
+            "vi": "vi", "ar": "ar", "el": "el", "it": "it", "hi": "hi",
+            "tl": "tl", "es": "es", "ko": "ko", "ja": "ja", "fr": "fr",
+            "de": "de", "pt": "pt-BR",
+        }
+        stt_language = deepgram_languages.get(language, "en-AU")
+        stt_config = deepgram.STT(model="nova-2", language=stt_language)
+        print(f"STT: Deepgram nova-2 with language={stt_language}")
+
+    # Configure TTS: use multilingual model for non-English
+    is_english = language.startswith("en") and not auto_detect_language
+    if is_english:
+        tts_config = elevenlabs.TTS(voice_id=voice_id, model="eleven_turbo_v2")
+        print("TTS: ElevenLabs turbo_v2 (English)")
+    else:
+        tts_config = elevenlabs.TTS(voice_id=voice_id, model="eleven_multilingual_v2")
+        print("TTS: ElevenLabs multilingual_v2")
+
+    # Configure VAD with response speed settings
+    # Lower min_silence_duration = faster response (but may cut off user mid-sentence)
+    vad_config = silero.VAD.load(
+        min_silence_duration=min_silence_duration,  # Default 0.55s, we use 0.4s for faster response
+        min_speech_duration=0.05,  # Minimum speech to start a chunk
+    )
 
     # Start the agent session with STT/LLM/TTS configuration
     session = AgentSession(
-        vad=silero.VAD.load(),
-        stt=deepgram.STT(),
+        vad=vad_config,
+        stt=stt_config,
         llm=openai.LLM(model=llm_model),
-        tts=elevenlabs.TTS(voice_id=voice_id),
+        tts=tts_config,
     )
 
     # Set up transcript capture if recording is enabled

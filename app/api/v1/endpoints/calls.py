@@ -36,6 +36,8 @@ class CallUpdateRequest(BaseModel):
     duration_seconds: Optional[int] = None
     ended_by: Optional[str] = None
     agent_response_count: Optional[int] = None
+    egress_id: Optional[str] = None
+    recording_url: Optional[str] = None
 
 
 class TranscriptEntry(BaseModel):
@@ -135,6 +137,10 @@ async def update_call(
         call.ended_by = request.ended_by
     if request.agent_response_count is not None:
         call.agent_response_count = request.agent_response_count
+    if request.egress_id:
+        call.egress_id = request.egress_id
+    if request.recording_url:
+        call.recording_url = request.recording_url
 
     await db.commit()
 
@@ -142,6 +148,7 @@ async def update_call(
         "call_updated",
         call_id=call_id,
         status=request.status,
+        recording_url=request.recording_url,
     )
 
     return {"status": "updated"}
@@ -229,6 +236,7 @@ class CallDetailResponse(BaseModel):
     duration_seconds: Optional[int]
     ended_by: Optional[str]
     agent_response_count: int
+    recording_url: Optional[str]
     transcripts: List[TranscriptResponse]
 
     class Config:
@@ -246,6 +254,7 @@ class CallListResponse(BaseModel):
     ended_at: Optional[datetime]
     duration_seconds: Optional[int]
     agent_response_count: int
+    recording_url: Optional[str]
 
     class Config:
         from_attributes = True
@@ -279,6 +288,7 @@ async def list_user_calls(
             ended_at=call.ended_at,
             duration_seconds=call.duration_seconds,
             agent_response_count=call.agent_response_count or 0,
+            recording_url=call.recording_url,
         )
         for call in calls
     ]
@@ -326,6 +336,7 @@ async def get_user_call(
         duration_seconds=call.duration_seconds,
         ended_by=call.ended_by,
         agent_response_count=call.agent_response_count or 0,
+        recording_url=call.recording_url,
         transcripts=[
             TranscriptResponse(
                 speaker=t.speaker,

@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Optional
 import uuid
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -46,6 +46,17 @@ class TenantSettings(Base):
         Text, default="Hello! How can I help you today?", nullable=False
     )
     max_conversation_turns: Mapped[int] = mapped_column(Integer, default=50, nullable=False)
+
+    # Language Configuration
+    # Supported: en, zh (Mandarin), yue (Cantonese), vi, ar, el, it, hi, tl, es, ko, ja, fr, de, pt
+    language: Mapped[str] = mapped_column(String(10), default="en", nullable=False)
+    auto_detect_language: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # Response Speed Configuration
+    # min_silence_duration: How long to wait after user stops speaking before responding (seconds)
+    # Lower = faster response but may cut off user mid-sentence
+    # Default: 0.55, Fast: 0.3, Very Fast: 0.2
+    min_silence_duration: Mapped[float] = mapped_column(Float, default=0.4, nullable=False)
 
     # Feature Flags
     rag_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

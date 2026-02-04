@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.endpoints.auth import get_current_user
 from app.core.database import get_db
+from app.models.global_settings import GlobalSettings, SETTING_ENABLED_MODELS, DEFAULT_MODELS
 from app.models.settings import TenantSettings
 from app.models.user import User
 
@@ -29,6 +30,13 @@ class SettingsResponse(BaseModel):
     system_prompt: Optional[str]
     welcome_message: str
     max_conversation_turns: int
+
+    # Language settings
+    language: str
+    auto_detect_language: bool
+
+    # Response speed
+    min_silence_duration: float
 
     # Features
     rag_enabled: bool
@@ -52,6 +60,13 @@ class SettingsUpdate(BaseModel):
     welcome_message: Optional[str] = None
     max_conversation_turns: Optional[int] = None
 
+    # Language settings
+    language: Optional[str] = None
+    auto_detect_language: Optional[bool] = None
+
+    # Response speed
+    min_silence_duration: Optional[float] = None
+
     # Features
     rag_enabled: Optional[bool] = None
     call_recording_enabled: Optional[bool] = None
@@ -71,6 +86,9 @@ def settings_to_response(settings: TenantSettings) -> SettingsResponse:
         system_prompt=settings.system_prompt,
         welcome_message=settings.welcome_message,
         max_conversation_turns=settings.max_conversation_turns,
+        language=settings.language,
+        auto_detect_language=settings.auto_detect_language,
+        min_silence_duration=settings.min_silence_duration,
         rag_enabled=settings.rag_enabled,
         call_recording_enabled=settings.call_recording_enabled,
     )
@@ -126,22 +144,40 @@ async def update_settings(
 
 
 @router.get("/models", response_model=AvailableModelsResponse)
-async def get_available_models():
-    """Get list of available AI models."""
+async def get_available_models(
+    db: AsyncSession = Depends(get_db),
+):
+    """Get list of available AI models (only enabled models)."""
+    # Get enabled models from global settings
+    result = await db.execute(
+        select(GlobalSettings).where(GlobalSettings.key == SETTING_ENABLED_MODELS)
+    )
+    setting = result.scalar_one_or_none()
+
+    if not setting:
+        # No settings yet, create with defaults (all enabled)
+        setting = GlobalSettings(
+            key=SETTING_ENABLED_MODELS,
+            value=DEFAULT_MODELS,
+            description="Controls which AI models are available to users",
+        )
+        db.add(setting)
+        await db.commit()
+        await db.refresh(setting)
+
+    models_config = setting.value
+
+    # Filter to only enabled models
+    openai_models = [
+        m["id"] for m in models_config.get("openai", []) if m.get("enabled", True)
+    ]
+    anthropic_models = [
+        m["id"] for m in models_config.get("anthropic", []) if m.get("enabled", True)
+    ]
+
     return AvailableModelsResponse(
-        openai=[
-            "gpt-4-turbo-preview",
-            "gpt-4",
-            "gpt-4o",
-            "gpt-4o-mini",
-            "gpt-3.5-turbo",
-        ],
-        anthropic=[
-            "claude-3-opus-20240229",
-            "claude-3-sonnet-20240229",
-            "claude-3-5-sonnet-20241022",
-            "claude-3-haiku-20240307",
-        ],
+        openai=openai_models,
+        anthropic=anthropic_models,
     )
 
 
@@ -159,6 +195,11 @@ class AgentSettingsResponse(BaseModel):
     max_conversation_turns: int
     rag_enabled: bool
     call_recording_enabled: bool
+    # Language settings
+    language: str
+    auto_detect_language: bool
+    # Response speed
+    min_silence_duration: float
 
     class Config:
         from_attributes = True
@@ -195,6 +236,9 @@ async def get_agent_settings_by_phone(
             max_conversation_turns=50,
             rag_enabled=True,
             call_recording_enabled=False,
+            language="en",
+            auto_detect_language=False,
+            min_silence_duration=0.4,
         )
 
     # Get user's settings
@@ -217,6 +261,9 @@ async def get_agent_settings_by_phone(
             max_conversation_turns=50,
             rag_enabled=True,
             call_recording_enabled=False,
+            language="en",
+            auto_detect_language=False,
+            min_silence_duration=0.4,
         )
 
     return AgentSettingsResponse(
@@ -231,6 +278,9 @@ async def get_agent_settings_by_phone(
         max_conversation_turns=settings.max_conversation_turns,
         rag_enabled=settings.rag_enabled,
         call_recording_enabled=settings.call_recording_enabled,
+        language=settings.language,
+        auto_detect_language=settings.auto_detect_language,
+        min_silence_duration=settings.min_silence_duration,
     )
 
 
@@ -260,6 +310,9 @@ async def get_agent_settings_by_user_id(
             max_conversation_turns=50,
             rag_enabled=True,
             call_recording_enabled=False,
+            language="en",
+            auto_detect_language=False,
+            min_silence_duration=0.4,
         )
 
     return AgentSettingsResponse(
@@ -274,4 +327,7 @@ async def get_agent_settings_by_user_id(
         max_conversation_turns=settings.max_conversation_turns,
         rag_enabled=settings.rag_enabled,
         call_recording_enabled=settings.call_recording_enabled,
+        language=settings.language,
+        auto_detect_language=settings.auto_detect_language,
+        min_silence_duration=settings.min_silence_duration,
     )
